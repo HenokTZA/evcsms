@@ -1,0 +1,12 @@
+Django==4.2.14
+djangorestframework==3.15.1
+
+channels==4.0.0
+channels-redis==4.2.0          # comment out if no Redis yet
+
+django-cors-headers==4.3.1
+
+ocpp==0.26.0                   # latest stable
+# websockets comes in automatically at 11.x (allowed by ocpp)
+
+redis==5.0.4                   # only when channels-redis is kept

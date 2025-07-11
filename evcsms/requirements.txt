@@ -10,3 +10,4 @@ ocpp==2.0.0                   # latest stable
 # websockets comes in automatically at 11.x (allowed by ocpp)
 
 redis==5.0.4                   # only when channels-redis is kept
+djangorestframework-simplejwt

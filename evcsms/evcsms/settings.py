@@ -1,64 +1,82 @@
-"""
-Django settings for evcsms project.
-
-Generated manually to keep things minimal yet admin-ready.
-"""
-
+# evcsms/settings.py
 from pathlib import Path
 import os
+from datetime import timedelta
 
-# ──────────────────────────
-#  Core paths & secrets
-# ──────────────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# where you keep custom settings
+PUBLIC_HOST = "147.93.127.215"     # ← your server’s public IP or domain
+
+ALLOWED_HOSTS = [
+    "147.93.127.215",   # ← your public IP, no port
+    "127.0.0.1",
+    "localhost",
+]
+
+
+# ────────────────
+#  Core
+# ────────────────
 SECRET_KEY = os.getenv(
     "DJANGO_SECRET_KEY",
-    "⚑_replace_this_with_a_real_secret_key_for_production",
+    "⚑_replace_this_soon",
 )
+DEBUG = True
 
-DEBUG = True                      # ⚑ switch to False in prod
-ALLOWED_HOSTS: list[str] = []     # ⚑ add domain/IPs when DEBUG=False
 
-# ──────────────────────────
-#  Applications
-# ──────────────────────────
+AUTH_USER_MODEL = "csms.User"
+
+# ───────────── Database ─────────────
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
+    }
+}
+
+
+# ────────────────
+#  Installed apps
+# ────────────────
 INSTALLED_APPS = [
-    # Django core
+    # Django
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    # Third-party
+    # 3-rd party
     "rest_framework",
-    # Local apps
+    "rest_framework_simplejwt",       # ← NEW
+    # project
     "csms",
+    "corsheaders",
 ]
 
-# ──────────────────────────
-#  Middleware (admin needs the three marked lines)
-# ──────────────────────────
+# ────────────────
+#  Middleware / templates (unchanged)
+# ────────────────
 MIDDLEWARE = [
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
-    "django.contrib.sessions.middleware.SessionMiddleware",   # ← required
+    "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
-    "django.contrib.auth.middleware.AuthenticationMiddleware",  # ← required
-    "django.contrib.messages.middleware.MessageMiddleware",     # ← required
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
+CORS_ALLOW_ALL_ORIGINS = True
+
 ROOT_URLCONF = "evcsms.urls"
 
-# ──────────────────────────
-#  Templates
-# ──────────────────────────
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],                        # BASE_DIR / "templates" if you add custom HTML
+        "DIRS": [],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -74,64 +92,39 @@ TEMPLATES = [
 WSGI_APPLICATION = "evcsms.wsgi.application"
 ASGI_APPLICATION = "evcsms.asgi.application"
 
-# ──────────────────────────
-#  Database  (SQLite for dev)
-# ──────────────────────────
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
-}
-
-# ──────────────────────────
-#  Password validation
-# ──────────────────────────
-AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
-    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
-    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
-]
-
-# ──────────────────────────
-#  Internationalisation / time
-# ──────────────────────────
-LANGUAGE_CODE = "en-us"
-TIME_ZONE = "UTC"      # keep CPs happy
-USE_I18N = True
-USE_TZ = True
-
-# ──────────────────────────
-#  Static files
-# ──────────────────────────
-STATIC_URL = "static/"
-STATIC_ROOT = BASE_DIR / "staticfiles"   # for collectstatic in prod
-
-# ──────────────────────────
-#  Default PK type
-# ──────────────────────────
-DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-
-# ──────────────────────────
-#  Django REST framework defaults (optional)
-# ──────────────────────────
+# ────────────────
+#  DRF & JWT
+# ────────────────
 REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ],
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
+        *(
+            []                          # Browsable API only in DEBUG
+            if not DEBUG
+            else ["rest_framework.renderers.BrowsableAPIRenderer"]
+        ),
     ],
     "DEFAULT_PARSER_CLASSES": [
         "rest_framework.parsers.JSONParser",
     ],
-    # Enable browsable API in DEBUG only
-    **(
-        {}
-        if not DEBUG
-        else {
-            "DEFAULT_RENDERER_CLASSES": [
-                "rest_framework.renderers.JSONRenderer",
-                "rest_framework.renderers.BrowsableAPIRenderer",
-            ]
-        }
-    ),
 }
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME":  timedelta(hours=1),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+}
+
+# ────────────────
+#  Static / i18n / etc. (unchanged)
+# ────────────────
+STATIC_URL   = "static/"
+STATIC_ROOT  = BASE_DIR / "staticfiles"
+LANGUAGE_CODE = "en-us"
+TIME_ZONE     = "UTC"
+USE_I18N = True
+USE_TZ   = True
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+

@@ -11,33 +11,44 @@ from asgiref.sync import sync_to_async
 from django.core.management.base import BaseCommand
 from ocpp.routing import on
 from ocpp.v16 import ChargePoint as CP, call_result
-
-from csms.models import ChargePoint, Transaction     # your own models
+from ocpp.v16 import call_result as cr
+from ocpp.v16 import call as c
+from websockets.exceptions import ConnectionClosed
+from csms.models import ChargePoint, Transaction, Tenant     # your own models
 # --------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("websockets.server").setLevel(logging.WARNING)
+log = logging.getLogger("ocpp")
 
-"""
-class SanitizingWS:
-    def __init__(self, ws):
-        self._ws = ws
 
-    async def recv(self):
-        raw = await self._ws.recv()
-        if isinstance(raw, str):
-            raw = (
-                raw
-                .replace("TransactionBegin", "Transaction.Begin")
-                .replace("TransactionEnd",   "Transaction.End")
-            )
-        return raw
+# ------------------------------------------------------------------------
+@sync_to_async
+def _get_tenant(ws_key: str) -> Tenant | None:
+    try:
+        return Tenant.objects.get(ws_key=ws_key.lower())
+    except Tenant.DoesNotExist:
+        return None
 
-    async def send(self, msg):
-        return await self._ws.send(msg)
 
-    def __getattr__(self, name):
-        return getattr(self._ws, name)
-"""
+@sync_to_async
+def _upsert_cp(tenant: Tenant, cp_id: str,
+               vendor: str, model: str, fw: str):
+    ChargePoint.objects.update_or_create(
+        id=cp_id,
+        defaults=dict(
+            tenant      = tenant,
+            vendor      = vendor,
+            model       = model,
+            fw_version  = fw,
+            status      = "Available",
+            name        = cp_id,          # keep simple
+            connector_id=0,
+        ),
+    )
+# ------------------------------------------------------------------------
+
+
 
 class SanitizingWS:
     def __init__(self, ws):
@@ -95,7 +106,7 @@ def _cr(name: str, **payload):
 
 # ──────────────────────────── ChargePoint handler ──────────────────────────
 class MyChargePoint(CP):
-
+    """
     # --------------------------- BootNotification --------------------------
     @on("BootNotification")
     async def on_boot_notification(
@@ -109,6 +120,43 @@ class MyChargePoint(CP):
             interval=30,
             status="Accepted",
         )
+    """
+
+    """
+    @on("BootNotification")
+    async def on_boot_notification(self, charge_point_vendor, charge_point_model, **_):
+        print(f"[Boot] {self.id}: {charge_point_vendor}/{charge_point_model}")
+
+        # this is the v16 call-result object you just imported:
+        return cr.BootNotification(
+            current_time=datetime.now(timezone.utc).isoformat(),
+            interval=30,
+            status="Accepted",
+        )
+    """
+
+    @on("BootNotification")
+    async def on_boot_notification(
+        self, charge_point_vendor, charge_point_model,
+        chargePointSerialNumber=None, firmwareVersion=None, **_
+    ):
+        print(f"[Boot] {self.id}: {charge_point_vendor}/{charge_point_model}")
+
+        tenant = await _get_tenant(self.tenant_key)
+        if tenant:          # guards against bogus ws_key
+            await _upsert_cp(tenant, self.id,
+                             charge_point_vendor,
+                             charge_point_model,
+                             firmwareVersion or "")
+
+        return cr.BootNotification(
+            current_time=datetime.now(timezone.utc).isoformat(),
+            interval=30,
+            status="Accepted",
+        )
+
+
+
 
     # ----------------------------- Heartbeat -------------------------------
     @on("Heartbeat")
@@ -118,6 +166,7 @@ class MyChargePoint(CP):
             current_time=datetime.now(timezone.utc).isoformat(),
         )
 
+    """
     # -------------------------- StatusNotification ------------------------
     @on("StatusNotification")
     async def on_status_notification(self, connector_id, status, **_):
@@ -131,6 +180,23 @@ class MyChargePoint(CP):
         )
         print(f"[Status] {self.id} c{connector_id} → {status}")
         return _cr("StatusNotification")
+    """
+
+    # ------------------------------------------------------------------------
+    # 2. live-status updates from the charge-point
+    # ------------------------------------------------------------------------
+    @on("StatusNotification")
+    async def on_status_notification(self, connector_id: int, status: str, **_):
+        # update only the live fields – don't touch tenant, name, etc.
+        await sync_to_async(ChargePoint.objects.filter(id=self.id).update)(
+            connector_id=connector_id,
+            status=status,
+            updated=datetime.now(timezone.utc),
+        )
+
+        print(f"[Status] {self.id} c{connector_id} → {status}")
+        return _cr("StatusNotification")
+
 
     # ------------------------------ DataTransfer ---------------------------
     @on("DataTransfer")
@@ -235,31 +301,126 @@ class MyChargePoint(CP):
 
         return _cr("MeterValues")
 
+
+
+
+# csms/management/commands/runocpp.py
 """
-    # ---------------------------- StopTransaction --------------------------
-    @on("StopTransaction")
-    async def on_stop_transaction(
-        self, meter_stop, transaction_id, timestamp, **_
-    ):
-        tx = await sync_to_async(
-            Transaction.objects.filter(pk=transaction_id).first
-        )()
-        if tx:
-            tx.stop_time = timestamp
-            tx.latest_wh = meter_stop
-            await sync_to_async(tx.save)(update_fields=["stop_time", "latest_wh"])
-            print(f"[StopTx] #{transaction_id} → {tx.kwh:.3f} kWh")
+async def _on_connect(websocket, path):
 
-        return _cr("StopTransaction", idTagInfo={"status": "accepted"})
+    # trim leading slash, split into segments
+    parts = path.lstrip("/").split("/")
 
+    # must be exactly ["api","v16", ws_key, cp_id]
+    if len(parts) != 4 or parts[0:2] != ["api", "v16"]:
+        await websocket.close(code=1008, reason="Bad URL")
+        return
+
+    _, _, ws_key, cp_id = parts
+    ws_key = ws_key.lower()
+
+    # wrap and start your charge-point
+    sanitized = SanitizingWS(websocket)
+    charge_point = MyChargePoint(cp_id, sanitized)
+    await charge_point.start()
 """
 
-# ───────────────────────────── websocket server ───────────────────────────
-async def _on_connect(ws, path):
-    cp_id = (path.strip("/") or "NO_ID").split("/")[-1]
-    sanitized_ws = SanitizingWS(ws)
-    await MyChargePoint(cp_id, sanitized_ws).start()
-    #await MyChargePoint(cp_id, ws).start()
+"""
+async def _on_connect(websocket, path):   # <- two parameters again
+    # path looks like: "/api/v16/<ws_key>/<cp_id>"
+    parts = path.lstrip("/").split("/")
+    if parts[:2] != ["api", "v16"] or len(parts) != 4:
+        await websocket.close(code=1008, reason="Bad URL")
+        return
+
+    _, _, ws_key, cp_id = parts
+    ws_key = ws_key.lower()
+
+    sanitized = SanitizingWS(websocket)
+    await MyChargePoint(cp_id, sanitized).start()
+
+    cp = MyChargePoint(cp_id, sanitized)
+
+    try:
+        await cp.start()                     # <= this returns only when the socket dies
+    except ConnectionClosed as e:
+        # peer closed the socket – *not* an error for us
+        log.info("[%s] WebSocket closed (%s %s)", cp.id, e.code, e.reason or "")
+    except Exception:
+        # real bug – keep the traceback but don’t kill the whole server
+        log.exception("[%s] unexpected exception", cp.id)
+"""
+
+"""
+async def _on_connect(websocket, path):
+    # Expect /api/v16/<ws_key>/<cp_id>
+    parts = path.lstrip("/").split("/")
+    if parts[:2] != ["api", "v16"] or len(parts) != 4:
+        await websocket.close(code=1008, reason="Bad URL")
+        return
+
+    _, _, ws_key, cp_id = parts
+    ws_key = ws_key.lower()
+
+    cp = MyChargePoint(cp_id, SanitizingWS(websocket))
+    cp.tenant_key = ws_key                # <- used in Boot handler above
+
+    try:
+        await cp.start()                  # runs until socket closes
+    except ConnectionClosed:
+        pass                              # peer hung-up – fine
+    except Exception:
+        log.exception("[%s] unexpected error", cp.id)
+"""
+
+# ------------------------------------------------------------------------
+# 1. connection entry-point  (/api/v16/<ws_key>/<cp_id>)
+# ------------------------------------------------------------------------
+async def _on_connect(websocket, path):
+    # expected path: /api/v16/<ws_key>/<cp_id>
+    parts = path.lstrip("/").split("/")
+    if len(parts) != 4 or parts[:2] != ["api", "v16"]:
+        await websocket.close(code=1008, reason="Bad URL")
+        return
+
+    _, _, ws_key, cp_id = parts
+    ws_key = ws_key.lower()
+
+    # ── ❶ who owns this key? ────────────────────────────────────────────
+    tenant = await sync_to_async(
+        lambda k: Tenant.objects.filter(ws_key=k).first()
+    )(ws_key)
+    if tenant is None:
+        await websocket.close(code=1008, reason="Unknown tenant key")
+        return
+
+    # ── ❷ make sure the CP row exists & is linked to that tenant ───────
+    def _ensure_cp():
+        cp, created = ChargePoint.objects.get_or_create(
+            id=cp_id,
+            defaults={"name": cp_id, "tenant": tenant},
+        )
+        # if the row pre-exists but has no tenant yet → attach it now
+        if cp.tenant_id is None:
+            cp.tenant = tenant
+            cp.save(update_fields=["tenant"])
+        return cp
+
+    await sync_to_async(_ensure_cp)()
+
+    # ── ❸ start the OCPP handler ────────────────────────────────────────
+    sanitized = SanitizingWS(websocket)
+    cp = MyChargePoint(cp_id, sanitized)
+    cp.tenant = tenant                # keep reference in the handler
+    cp.tenant_key = ws_key
+
+    try:
+        await cp.start()              # returns only when the socket closes
+    except ConnectionClosed as e:
+        log.info("[%s] websocket closed (%s %s)", cp.id, e.code, e.reason or "")
+    except Exception:
+        log.exception("[%s] unexpected exception", cp.id)
+
 
 
 # ───────────────────── Django management-command shell ────────────────────

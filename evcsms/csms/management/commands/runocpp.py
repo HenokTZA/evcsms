@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import logging
 import json
-
+from csms.ocpp_bridge import next_for
 import websockets
 from asgiref.sync import sync_to_async
 from django.core.management.base import BaseCommand
@@ -15,11 +15,19 @@ from ocpp.v16 import call_result as cr
 from ocpp.v16 import call as c
 from websockets.exceptions import ConnectionClosed
 from csms.models import ChargePoint, Transaction, Tenant     # your own models
+import re
 # --------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("websockets.server").setLevel(logging.WARNING)
 log = logging.getLogger("ocpp")
+
+
+_camel = re.compile(r"(?<!^)([A-Z])")
+
+def camel_to_snake(s: str) -> str:
+    """transactionId → transaction_id,  connectorId → connector_id…"""
+    return _camel.sub(r"_\1", s).lower()
 
 
 # ------------------------------------------------------------------------
@@ -106,34 +114,6 @@ def _cr(name: str, **payload):
 
 # ──────────────────────────── ChargePoint handler ──────────────────────────
 class MyChargePoint(CP):
-    """
-    # --------------------------- BootNotification --------------------------
-    @on("BootNotification")
-    async def on_boot_notification(
-        self, charge_point_vendor, charge_point_model, **_
-    ):
-        print(f"[Boot] {self.id}: {charge_point_vendor}/{charge_point_model}")
-
-        return _cr(
-            "BootNotification",
-            current_time=datetime.now(timezone.utc).isoformat(),
-            interval=30,
-            status="Accepted",
-        )
-    """
-
-    """
-    @on("BootNotification")
-    async def on_boot_notification(self, charge_point_vendor, charge_point_model, **_):
-        print(f"[Boot] {self.id}: {charge_point_vendor}/{charge_point_model}")
-
-        # this is the v16 call-result object you just imported:
-        return cr.BootNotification(
-            current_time=datetime.now(timezone.utc).isoformat(),
-            interval=30,
-            status="Accepted",
-        )
-    """
 
     @on("BootNotification")
     async def on_boot_notification(
@@ -166,21 +146,7 @@ class MyChargePoint(CP):
             current_time=datetime.now(timezone.utc).isoformat(),
         )
 
-    """
-    # -------------------------- StatusNotification ------------------------
-    @on("StatusNotification")
-    async def on_status_notification(self, connector_id, status, **_):
-        await sync_to_async(ChargePoint.objects.update_or_create)(
-            id=self.id,
-            defaults={
-                "name": self.id,
-                "connector_id": connector_id,
-                "status": status,
-            },
-        )
-        print(f"[Status] {self.id} c{connector_id} → {status}")
-        return _cr("StatusNotification")
-    """
+
 
     # ------------------------------------------------------------------------
     # 2. live-status updates from the charge-point
@@ -303,75 +269,57 @@ class MyChargePoint(CP):
 
 
 
+    """
+    async def _command_poller(self):
 
-# csms/management/commands/runocpp.py
-"""
-async def _on_connect(websocket, path):
+        while True:
+            cmd = await next_for(self.id)           # from ocpp_bridge.py
+            if cmd:
+                action, params = cmd
+                print(f"[CMD] {self.id} → {action} {params}")
+                call_cls  = getattr(c, action)    # e.g. c.RemoteStopTransaction
+                try:
+                    resp = await self.call(call_cls(**params))
+                    print(f"[CMD]  ↳  {resp}")
+                except Exception as exc:
+                    print(f"[CMD]  ↳  ERROR {exc}")
+            await asyncio.sleep(1)
+    """
 
-    # trim leading slash, split into segments
-    parts = path.lstrip("/").split("/")
+    async def _command_poller(self):
+        while True:
+            cmd = await next_for(self.id)
+            if cmd:
+                action, params = cmd
+                # --- NEW: translate payload keys ---------------------------
+                snake_params = {camel_to_snake(k): v for k, v in params.items()}
+                # -----------------------------------------------------------
+                print(f"[CMD] {self.id} → {action} {snake_params}")
 
-    # must be exactly ["api","v16", ws_key, cp_id]
-    if len(parts) != 4 or parts[0:2] != ["api", "v16"]:
-        await websocket.close(code=1008, reason="Bad URL")
-        return
+                call_cls = getattr(c, action)          # e.g. c.RemoteStopTransaction
+                try:
+                    resp = await self.call(call_cls(**snake_params))
+                    print(f"[CMD]  ↳  {resp}")
+                except Exception as exc:
+                    print(f"[CMD]  ↳  ERROR {exc}")
+            await asyncio.sleep(1)
 
-    _, _, ws_key, cp_id = parts
-    ws_key = ws_key.lower()
 
-    # wrap and start your charge-point
-    sanitized = SanitizingWS(websocket)
-    charge_point = MyChargePoint(cp_id, sanitized)
-    await charge_point.start()
-"""
 
-"""
-async def _on_connect(websocket, path):   # <- two parameters again
-    # path looks like: "/api/v16/<ws_key>/<cp_id>"
-    parts = path.lstrip("/").split("/")
-    if parts[:2] != ["api", "v16"] or len(parts) != 4:
-        await websocket.close(code=1008, reason="Bad URL")
-        return
+    # ───────────── override CP.start() to launch the poller ────────
+    async def start(self):
+        """
+        Run the normal python-ocpp loop *and* a side-task that feeds
+        commands coming from the REST API.
+        """
+        poller = asyncio.create_task(self._command_poller())
+        try:
+            await super().start()             # ← blocks until WS closes
+        finally:
+            poller.cancel()                   # tidy up when CP disconnects
 
-    _, _, ws_key, cp_id = parts
-    ws_key = ws_key.lower()
 
-    sanitized = SanitizingWS(websocket)
-    await MyChargePoint(cp_id, sanitized).start()
 
-    cp = MyChargePoint(cp_id, sanitized)
-
-    try:
-        await cp.start()                     # <= this returns only when the socket dies
-    except ConnectionClosed as e:
-        # peer closed the socket – *not* an error for us
-        log.info("[%s] WebSocket closed (%s %s)", cp.id, e.code, e.reason or "")
-    except Exception:
-        # real bug – keep the traceback but don’t kill the whole server
-        log.exception("[%s] unexpected exception", cp.id)
-"""
-
-"""
-async def _on_connect(websocket, path):
-    # Expect /api/v16/<ws_key>/<cp_id>
-    parts = path.lstrip("/").split("/")
-    if parts[:2] != ["api", "v16"] or len(parts) != 4:
-        await websocket.close(code=1008, reason="Bad URL")
-        return
-
-    _, _, ws_key, cp_id = parts
-    ws_key = ws_key.lower()
-
-    cp = MyChargePoint(cp_id, SanitizingWS(websocket))
-    cp.tenant_key = ws_key                # <- used in Boot handler above
-
-    try:
-        await cp.start()                  # runs until socket closes
-    except ConnectionClosed:
-        pass                              # peer hung-up – fine
-    except Exception:
-        log.exception("[%s] unexpected error", cp.id)
-"""
 
 # ------------------------------------------------------------------------
 # 1. connection entry-point  (/api/v16/<ws_key>/<cp_id>)

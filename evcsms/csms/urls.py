@@ -4,6 +4,7 @@ from rest_framework_simplejwt.views import (
 )
 from csms import views
 from django.urls import path
+from . import views
 from .views      import SignupView, LoginView, ChargePointList, TransactionList
 
 urlpatterns = [
@@ -13,4 +14,12 @@ urlpatterns = [
     path("charge-points/", ChargePointList.as_view(), name="charge-points"),
     path("sessions/",      TransactionList.as_view(), name="sessions"),
     path("me/", views.MeView.as_view(), name="me"),
+]
+
+urlpatterns += [
+    path("charge-points/<pk>/",                    # GET single CP
+         views.ChargePointDetail.as_view()),
+
+    path("charge-points/<pk>/command/",            # POST command
+         views.ChargePointCommand.as_view()),
 ]

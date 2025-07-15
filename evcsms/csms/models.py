@@ -108,3 +108,20 @@ class Transaction(models.Model):
     def __str__(self):
         return f"#{self.tx_id} on {self.cp_id}"
 
+
+# csms/models.py  (add at the bottom, then makemigrations)
+class CPCommand(models.Model):
+    """
+    One row = one OCPP command that should be sent to a charge-point.
+    """
+    cp       = models.ForeignKey(
+        "ChargePoint", on_delete=models.CASCADE, related_name="cmd_queue"
+    )
+    action   = models.CharField(max_length=40)          # e.g. RemoteStartTransaction
+    payload  = models.JSONField(default=dict)           # parameters dict
+    created  = models.DateTimeField(auto_now_add=True)
+    done_at  = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["cp", "done_at", "created"])]
+

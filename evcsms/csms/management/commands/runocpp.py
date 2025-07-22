@@ -269,22 +269,148 @@ class MyChargePoint(CP):
 
 
 
-    """
-    async def _command_poller(self):
+    # ------------------------------------------------------------------ #
+    #  constructor – keep super() but initialise small in-memory stores   #
+    # ------------------------------------------------------------------ #
+    def __init__(self, charge_point_id, websocket):
+        super().__init__(charge_point_id, websocket)
 
-        while True:
-            cmd = await next_for(self.id)           # from ocpp_bridge.py
-            if cmd:
-                action, params = cmd
-                print(f"[CMD] {self.id} → {action} {params}")
-                call_cls  = getattr(c, action)    # e.g. c.RemoteStopTransaction
-                try:
-                    resp = await self.call(call_cls(**params))
-                    print(f"[CMD]  ↳  {resp}")
-                except Exception as exc:
-                    print(f"[CMD]  ↳  ERROR {exc}")
-            await asyncio.sleep(1)
-    """
+        # simple, mutable stores for demo purposes
+        self.config: dict[str, str] = {        # “key” → “value”
+            "HeartbeatInterval": "30",
+            "ConnectionTimeOut": "180",
+        }
+        self.local_list_version: int = 1
+        self.charging_profiles: dict[int, dict] = {}   # profileId → blob
+    # ------------------------------------------------------------------ #
+
+    # ─────────────────────────── GET-/CHANGE CONFIG ─────────────────── #
+    @on("GetConfiguration")
+    async def on_get_configuration(self, key: list[str] | None = None, **_):
+        """
+        • If key == [], return **all** keys.
+        • Otherwise return only the requested ones, collect unknown ones.
+        """
+        if key is None:
+            key = []
+
+        if len(key) == 0:                       # “all keys” shortcut
+            requested = list(self.config.items())
+            unknown   = []
+        else:
+            requested = [(k, self.config[k]) for k in key if k in self.config]
+            unknown   = [k for k in key if k not in self.config]
+
+        cfg_list = [
+            {"key": k, "value": v, "readonly": False}
+            for k, v in requested
+        ]
+
+        return _cr(                             # ← helper from earlier
+            "GetConfiguration",
+            configuration_key=cfg_list,
+            unknown_key=unknown,
+        )
+
+    @on("ChangeConfiguration")
+    async def on_change_configuration(self, key: str, value: str, **_):
+        """
+        Accept every change as long as the key exists (demo-style).
+        """
+        if key not in self.config:
+            return _cr("ChangeConfiguration", status="Rejected")
+
+        self.config[key] = value
+        return _cr("ChangeConfiguration", status="Accepted")
+    # ─────────────────────────────────────────────────────────────────── #
+
+    # ───────────────────────── LOCAL-LIST VERSION  ──────────────────── #
+    @on("GetLocalListVersion")
+    async def on_get_local_list_version(self, **_):
+        return _cr("GetLocalListVersion", list_version=self.local_list_version)
+    # ─────────────────────────────────────────────────────────────────── #
+
+    # ─────────────────────── CHARGING-PROFILE CRUD  ─────────────────── #
+    @on("SetChargingProfile")
+    async def on_set_charging_profile(
+        self,
+        connector_id: int,
+        cs_charging_profiles: dict,
+        **_
+    ):
+        pid = cs_charging_profiles.get("chargingProfileId")
+        if pid is None:
+            return _cr("SetChargingProfile", status="Rejected")
+
+        if not hasattr(self, "charging_profiles"):
+            self.charging_profiles = {}
+
+        self.charging_profiles[pid] = {
+            "connectorId": connector_id,
+            **cs_charging_profiles,
+        }
+
+        print(f"[Profile] saved profile #{pid} on {self.id}")
+        return _cr("SetChargingProfile", status="Accepted")
+
+    @on("ClearChargingProfile")
+    async def on_clear_charging_profile(
+        self,
+        id: int | None = None,
+        connector_id: int | None = None,
+        charging_profile_purpose: str | None = None,
+        stack_level: int | None = None,
+        **_
+    ):
+        """
+        Super simple: if id is given remove that one, otherwise wipe all.
+        """
+        if id is not None:
+            self.charging_profiles.pop(id, None)
+        else:
+            self.charging_profiles.clear()
+
+        return _cr("ClearChargingProfile", status="Accepted")
+
+    @on("GetCompositeSchedule")
+    async def on_get_composite_schedule(
+        self,
+        connector_id: int,
+        duration: int,
+        charging_rate_unit: str | None = None,
+        **_
+    ):
+        """
+        Demo implementation:
+        • If **any** profiles exist we’ll make up a 1-entry schedule.
+        • Otherwise we report “Rejected”.
+        """
+        if not self.charging_profiles:
+            return _cr("GetCompositeSchedule", status="Rejected")
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        schedule = {
+            "duration": duration,
+            "startSchedule": now_iso,
+            "chargingRateUnit": charging_rate_unit or "A",
+            "chargingSchedulePeriod": [
+                {"startPeriod": 0, "limit": 16}
+            ],
+        }
+
+        return _cr(
+            "GetCompositeSchedule",
+            status="Accepted",
+            connector_id=connector_id,
+            schedule_start=now_iso,
+            charging_schedule=schedule,
+        )
+    # ─────────────────────────────────────────────────────────────────── #
+
+
+
+
 
     async def _command_poller(self):
         while True:

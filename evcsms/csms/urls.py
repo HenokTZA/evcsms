@@ -5,7 +5,7 @@ from rest_framework_simplejwt.views import (
 from csms import views
 from django.urls import path
 from . import views
-from .views      import SignupView, LoginView, ChargePointList, TransactionList
+from .views      import SignupView, LoginView, ChargePointList, TransactionList, ChargePointDetail
 
 urlpatterns = [
     path("auth/signup/", views.SignupView.as_view(), name="signup"),

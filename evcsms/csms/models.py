@@ -4,6 +4,8 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.conf import settings
 from django.utils.crypto import get_random_string
+from django.utils import timezone
+from decimal import Decimal
 
 # ──────────────────────────────────────────
 #  AUTH – three user roles
@@ -81,6 +83,9 @@ class ChargePoint(models.Model):
     connector_id  = models.PositiveSmallIntegerField(default=0)
     status        = models.CharField(max_length=30, default="Unknown")
     updated       = models.DateTimeField(auto_now=True)
+    price_per_kwh  = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)
+    price_per_hour = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)
+    location       = models.CharField(max_length=255, blank=True, default="")
 
     def __str__(self):
         return self.name or self.id
@@ -98,6 +103,10 @@ class Transaction(models.Model):
     latest_wh  = models.FloatField(null=True, blank=True)
     start_time = models.DateTimeField()
     stop_time  = models.DateTimeField(null=True, blank=True)
+    price_kwh_at_start  = models.DecimalField(max_digits=8, decimal_places=3,
+                                              null=True, blank=True)
+    price_hour_at_start    = models.DecimalField(max_digits=8, decimal_places=3,
+                                              null=True, blank=True)
 
     @property
     def kwh(self):
@@ -107,6 +116,21 @@ class Transaction(models.Model):
 
     def __str__(self):
         return f"#{self.tx_id} on {self.cp_id}"
+
+    def total_price(self):
+        """kWh * saved-price; returns None when we have no price yet."""
+        if self.price_kwh_at_start is None and self.price_hour_at_start is None:
+            return None                      # nothing to add up
+
+        # energy component
+        energy_cost = (self.kwh or 0) * (self.price_kwh_at_start or 0)
+
+        # time component  (use now() for still-running sessions)
+        duration = (self.stop_time or timezone.now()) - self.start_time
+        hours    = duration.total_seconds() / 3600
+        time_cost = hours * (self.price_hour_at_start or 0)
+
+        return round(Decimal(energy_cost + time_cost), 3)
 
 
 # csms/models.py  (add at the bottom, then makemigrations)

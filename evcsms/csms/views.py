@@ -17,7 +17,7 @@ from .serializers import (
     UserSerializer,
 )
 from .permissions import IsRootAdmin, IsCpAdmin   # keep for later fine-graining
-
+from .helpers     import _tenant_qs
 
 User = get_user_model()
 # ────────────────────────────────────────────────────────────────
@@ -25,14 +25,10 @@ User = get_user_model()
 # ────────────────────────────────────────────────────────────────
 
 
-
+"""
 # csms/views.py  (only this helper)
 def _tenant_qs(model, user, *, with_owner_split=False):
-    """
-    Return a queryset limited to the user’s tenant.
-    Transaction → follow cp__tenant
-    every other model that has tenant FK directly → tenant
-    """
+
     try:
         tenant = user.tenant                    # reverse OneToOne from User → Tenant
     except Tenant.DoesNotExist:
@@ -47,7 +43,7 @@ def _tenant_qs(model, user, *, with_owner_split=False):
         qs = qs.filter(owner=user)
 
     return qs
-
+"""
 
 class ChargePointList(generics.ListAPIView):
     serializer_class   = ChargePointSerializer
@@ -134,11 +130,13 @@ class MeView(generics.RetrieveAPIView):
         return ctx
 
 
-
+"""
 # csms/views.py  (append at the end)
 
 class ChargePointDetail(generics.RetrieveAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    #permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated & (IsRootAdmin | IsCpAdmin)]
+    #permission_classes = [IsRootAdmin | IsCpAdmin]
     serializer_class   = ChargePointSerializer
     queryset           = ChargePoint.objects.all()
 
@@ -146,22 +144,19 @@ class ChargePointDetail(generics.RetrieveAPIView):
         # reuse earlier helper to respect tenancy
         return _tenant_qs(ChargePoint, self.request.user)
 """
-class ChargePointCommand(APIView):
 
-    permission_classes = [permissions.IsAuthenticated]
+class ChargePointDetail(generics.RetrieveUpdateAPIView):
+    """
+    • GET    /api/charge-points/<id>/   → details
+    • PATCH  /api/charge-points/<id>/   → partial update
+    • PUT    /api/charge-points/<id>/   → full update
+    """
+    serializer_class = ChargePointSerializer
+    permission_classes = [permissions.IsAuthenticated & (IsRootAdmin | IsCpAdmin)]
 
-    def post(self, request, pk):
-        cp = get_object_or_404(
-            _tenant_qs(ChargePoint, request.user), pk=pk
-        )
-        action = request.data.get("action")
-        params = request.data.get("params", {})
-
-
-        async_to_sync(enqueue)(cp.id, action, params)
-
-        return Response({"detail": "queued"}, status=status.HTTP_202_ACCEPTED)
-"""
+    def get_queryset(self):
+        # only CPs that belong to the current tenant
+        return _tenant_qs(ChargePoint, self.request.user)
 
 
 class ChargePointCommand(APIView):

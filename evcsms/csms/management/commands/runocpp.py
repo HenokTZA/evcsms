@@ -192,6 +192,7 @@ class MyChargePoint(CP):
             return (last.tx_id if last else 0) + 1
 
         tx_id = await _next_tx_id()
+        cp_obj = await sync_to_async(ChargePoint.objects.get)(pk=self.id)
 
         await sync_to_async(Transaction.objects.create)(
             tx_id=tx_id,
@@ -200,6 +201,8 @@ class MyChargePoint(CP):
             start_wh=meter_start,
             latest_wh=meter_start,
             start_time=timestamp,
+            price_kwh_at_start = cp_obj.price_per_kwh,
+            price_h_at_start   = cp_obj.price_per_hour,
         )
         print(f"[StartTx] #{tx_id} on {self.id} meterStart={meter_start}Wh")
 

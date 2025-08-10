@@ -5,7 +5,7 @@ from django.db import models
 from django.conf import settings
 from django.utils.crypto import get_random_string
 from django.utils import timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 # ──────────────────────────────────────────
 #  AUTH – three user roles
@@ -112,13 +112,13 @@ class Transaction(models.Model):
     def kwh(self):
         if self.start_wh is None or self.latest_wh is None:
             return 0
-        return max(self.latest_wh - self.start_wh, 0) / 1000
+        #return max(self.latest_wh - self.start_wh, 0) / 1000
+        return (Decimal(self.latest_wh) - Decimal(self.start_wh)) / Decimal("1000")
 
     def __str__(self):
         return f"#{self.tx_id} on {self.cp_id}"
-
+    """
     def total_price(self):
-        """kWh * saved-price; returns None when we have no price yet."""
         if self.price_kwh_at_start is None and self.price_hour_at_start is None:
             return None                      # nothing to add up
 
@@ -131,7 +131,38 @@ class Transaction(models.Model):
         time_cost = hours * (self.price_hour_at_start or 0)
 
         return round(Decimal(energy_cost + time_cost), 3)
+    """
 
+    def total_price(self):
+        # No pricing yet?
+        if self.price_kwh_at_start is None and self.price_hour_at_start is None:
+            return None
+
+        total = Decimal("0")
+
+        # ---- energy cost (kWh * price_kwh) ----
+        kwh = self.kwh
+        if kwh is None:
+            kwh = Decimal("0")
+        elif not isinstance(kwh, Decimal):
+            kwh = Decimal(str(kwh))  # defend if kwh is a float
+
+        if self.price_kwh_at_start is not None:
+            total += kwh * self.price_kwh_at_start
+
+        # ---- time cost (hours * price_hour) ----
+        end = self.stop_time or timezone.now()
+        delta = end - self.start_time
+        # build seconds as Decimal (no float)
+        secs = (Decimal(delta.days) * Decimal("86400")
+                + Decimal(delta.seconds)
+                + (Decimal(delta.microseconds) / Decimal("1000000")))
+        hours = secs / Decimal("3600")
+
+        if self.price_hour_at_start is not None:
+            total += hours * self.price_hour_at_start
+
+        return total.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
 
 # csms/models.py  (add at the bottom, then makemigrations)
 class CPCommand(models.Model):

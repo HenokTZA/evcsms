@@ -202,7 +202,7 @@ class MyChargePoint(CP):
             latest_wh=meter_start,
             start_time=timestamp,
             price_kwh_at_start = cp_obj.price_per_kwh,
-            price_h_at_start   = cp_obj.price_per_hour,
+            price_hour_at_start   = cp_obj.price_per_hour,
         )
         print(f"[StartTx] #{tx_id} on {self.id} meterStart={meter_start}Wh")
 

@@ -5,8 +5,45 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework.validators import UniqueValidator
 import uuid
 from django.conf import settings
+from django.contrib.auth.models import User
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.http import urlsafe_base64_decode
 
 User = get_user_model()
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        if not User.objects.filter(email=value, is_active=True).exists():
+            raise serializers.ValidationError("No active user with this email")
+        return value
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    uid  = serializers.CharField()
+    token = serializers.CharField()
+    new_password = serializers.CharField(min_length=8)
+
+    def validate(self, attrs):
+        try:
+            uid = urlsafe_base64_decode(attrs['uid']).decode()
+            user = User.objects.get(pk=uid)
+        except (TypeError, ValueError, User.DoesNotExist):
+            raise serializers.ValidationError("Invalid UID")
+
+        if not default_token_generator.check_token(user, attrs['token']):
+            raise serializers.ValidationError("Invalid or expired token")
+
+        attrs['user'] = user
+        return attrs
+
+    def save(self):
+        user = self.validated_data['user']
+        user.set_password(self.validated_data['new_password'])
+        user.save()
+        return user
+
 
 class ChargePointSerializer(serializers.ModelSerializer):
     class Meta:
@@ -73,14 +110,10 @@ class SignUpSerializer(serializers.ModelSerializer):
         fields = ("username", "email", "password", "role")
 
     def create(self, validated):
-        """
-        • Hash the password
-        • Persist the user
-        • If the user is a “root” owner, also create their Tenant with a ws_key.
-        """
+
         role = validated.pop("role", "root")
         password = validated.pop("password")
-
+        validated["email"] = validated.get("email") or validated.get("username")
         user = User(role=role, **validated)
         user.set_password(password)
         user.save()

@@ -128,3 +128,13 @@ USE_I18N = True
 USE_TZ   = True
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+EMAIL_BACKEND      = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST         = "mail.habm-lab.com"
+EMAIL_PORT         = 465
+EMAIL_HOST_USER    = "test@habm-lab.com"
+EMAIL_HOST_PASSWORD= "#Procondev01"
+EMAIL_USE_SSL      = True
+# since you’re using implicit SSL on port 465, you don’t need STARTTLS
+# so you can leave EMAIL_USE_TLS = False (or omit it entirely)
+DEFAULT_FROM_EMAIL = "H-Craft <test@habm-lab.com>"
+

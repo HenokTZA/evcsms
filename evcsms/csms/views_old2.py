@@ -15,55 +15,35 @@ from .serializers import (
     MeSerializer,
     TokenObtainPairPatchedSerializer,
     UserSerializer,
-    PasswordResetRequestSerializer,
-    PasswordResetConfirmSerializer,
 )
 from .permissions import IsRootAdmin, IsCpAdmin   # keep for later fine-graining
 from .helpers     import _tenant_qs
-
-from django.contrib.auth.models import User
-from django.contrib.auth.tokens import default_token_generator
-from django.utils.http import urlsafe_base64_encode
-from django.utils.encoding import force_bytes
-from django.core.mail import send_mail
-
 
 User = get_user_model()
 # ────────────────────────────────────────────────────────────────
 #  Helpers
 # ────────────────────────────────────────────────────────────────
 
-class PasswordResetRequestView(generics.GenericAPIView):
-    serializer_class = PasswordResetRequestSerializer
 
-    def post(self, request):
-        ser = self.get_serializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        user = User.objects.get(email=ser.validated_data["email"], is_active=True)
+"""
+# csms/views.py  (only this helper)
+def _tenant_qs(model, user, *, with_owner_split=False):
 
-        uid = urlsafe_base64_encode(force_bytes(user.pk))
-        token = default_token_generator.make_token(user)
-        reset_link = f"http://147.93.127.215:5173/reset-password/{uid}/{token}"
+    try:
+        tenant = user.tenant                    # reverse OneToOne from User → Tenant
+    except Tenant.DoesNotExist:
+        return model.objects.none()
 
-        send_mail(
-            subject="Reset your password",
-            message=f"Click here to reset your password:\n\n{reset_link}",
-            from_email=None,
-            recipient_list=[user.email],
-        )
-        return Response({"detail": "Password reset e-mail sent"}, status=status.HTTP_200_OK)
+    if model is Transaction:                    # 🔑 keep this branch!
+        qs = model.objects.filter(cp__tenant=tenant)
+    else:
+        qs = model.objects.filter(tenant=tenant)
 
+    if with_owner_split and user.is_cp_admin:
+        qs = qs.filter(owner=user)
 
-class PasswordResetConfirmView(generics.GenericAPIView):
-    serializer_class = PasswordResetConfirmSerializer
-
-    def post(self, request):
-        ser = self.get_serializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        ser.save()
-        return Response({"detail": "Password has been reset"}, status=status.HTTP_200_OK)
-
-
+    return qs
+"""
 
 class ChargePointList(generics.ListAPIView):
     serializer_class   = ChargePointSerializer
@@ -213,3 +193,4 @@ class CpCommandView(APIView):
         # ── put it in the queue ───────────────────────────────────────
         asyncio.create_task(enqueue(cp.id, action, params))   # fire-and-forget
         return Response({"detail": "queued"}, status=202)
+

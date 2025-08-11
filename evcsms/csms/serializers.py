@@ -60,9 +60,20 @@ class ChargePointSerializer(serializers.ModelSerializer):
             "price_per_kwh",
             "price_per_hour",
             "location",
+            "lat",
+            "lng",
         ]
         read_only_fields = ["id", "updated"]
 
+    def validate_lat(self, v):
+        if v is not None and not (-90 <= float(v) <= 90):
+            raise serializers.ValidationError("Latitude must be between -90 and 90.")
+        return v
+
+    def validate_lng(self, v):
+        if v is not None and not (-180 <= float(v) <= 180):
+            raise serializers.ValidationError("Longitude must be between -180 and 180.")
+        return v
 
 
 

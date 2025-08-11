@@ -85,7 +85,12 @@ class ChargePoint(models.Model):
     updated       = models.DateTimeField(auto_now=True)
     price_per_kwh  = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)
     price_per_hour = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)
-    location       = models.CharField(max_length=255, blank=True, default="")
+    location       = models.CharField(max_length=255, blank=True, default="", null=True)
+    lat = models.DecimalField(max_digits=9, decimal_places=6, blank=True, null=True)
+    lng = models.DecimalField(max_digits=9, decimal_places=6, blank=True, null=True)
+
+    def has_coords(self):
+        return self.lat is not None and self.lng is not None
 
     def __str__(self):
         return self.name or self.id

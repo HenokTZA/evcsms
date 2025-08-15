@@ -16,6 +16,9 @@ from ocpp.v16 import call as c
 from websockets.exceptions import ConnectionClosed
 from csms.models import ChargePoint, Transaction, Tenant     # your own models
 import re
+from csms.ocpp_hub import hub
+import django.utils.timezone as dj_timezone
+
 # --------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO)
@@ -110,6 +113,30 @@ def _cr(name: str, **payload):
     """
     cls = getattr(call_result, f"{name}Payload", None) or getattr(call_result, name)
     return cls(**payload)
+
+
+class ChargePointHandler(ChargePoint):  # whatever class you use
+    def __init__(self, id, connection, db_cp_id: int, *args, **kwargs):
+        super().__init__(id, connection, *args, **kwargs)
+        self.db_cp_id = db_cp_id
+
+    async def on_connect(self):
+        # Called after handshake is done and we know which DB CP this is
+        await hub.register(self.db_cp_id, self)
+
+    async def on_disconnect(self):
+        await hub.unregister(self.db_cp_id)
+
+    # You probably already have lifecycle hooks; call register/unregister there.
+    # If not, call register right after you create the CP handler and
+    # make sure to unregister in a finally: block when its websocket ends.
+
+# Where you accept a socket and build the handler:
+# - resolve db_cp_id from the OCPP identity (e.g., chargeBoxId -> your CP row)
+# - then pass db_cp_id to handler and call handler.on_connect()
+#
+# On socket close/exception, call handler.on_disconnect()
+
 
 
 # ──────────────────────────── ChargePoint handler ──────────────────────────
@@ -375,6 +402,32 @@ class MyChargePoint(CP):
 
         return _cr("ClearChargingProfile", status="Accepted")
 
+    @on("FirmwareStatusNotification")
+    async def on_firmware_status_notification(self, status: str, **kwargs):
+        """
+        CP -> CSMS. Status is one of:
+          Idle, Downloading, Downloaded, Installing, Installed, DownloadFailed, InstallationFailed
+        """
+        print(f"[FW]  {self.id} → {status}")
+        # Optional: persist last known firmware status
+        await sync_to_async(
+            ChargePoint.objects.filter(id=self.id).update
+        )(fw_status=status, updated=dj_timezone.now())  # remove/update fields if your model differs
+        return _cr("FirmwareStatusNotification")
+
+
+    @on("DiagnosticsStatusNotification")
+    async def on_diagnostics_status_notification(self, status: str, **kwargs):
+        """
+        CP -> CSMS. Status is usually Uploading / Uploaded / UploadFailed / Idle.
+        """
+        print(f"[DIAG] {self.id} → {status}")
+        # Optional: persist last diagnostics status
+        await sync_to_async(
+            ChargePoint.objects.filter(id=self.id).update
+        )(diag_status=status, updated=dj_timezone.now())  # remove/update fields if your model differs
+        return _cr("DiagnosticsStatusNotification")
+
     @on("GetCompositeSchedule")
     async def on_get_composite_schedule(
         self,
@@ -424,7 +477,12 @@ class MyChargePoint(CP):
                 snake_params = {camel_to_snake(k): v for k, v in params.items()}
                 # -----------------------------------------------------------
                 print(f"[CMD] {self.id} → {action} {snake_params}")
-
+                if action == "FirmwareStatusNotification":
+                    action = "TriggerMessage"
+                    # Make sure we send the correct requested message
+                    # connector_id is optional; set 0 by default.
+                    snake_params = {"requested_message": "FirmwareStatusNotification",
+                                    "connector_id": snake_params.get("connector_id", 0)}
                 call_cls = getattr(c, action)          # e.g. c.RemoteStopTransaction
                 try:
                     resp = await self.call(call_cls(**snake_params))

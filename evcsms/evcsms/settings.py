@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     # project
     "csms",
     "corsheaders",
+    "rest_framework_simplejwt.token_blacklist",
 ]
 
 # ────────────────

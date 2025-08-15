@@ -6,6 +6,8 @@ from csms import views
 from django.urls import path
 from . import views
 from .views      import SignupView, LoginView, ChargePointList, TransactionList, ChargePointDetail, PasswordResetRequestView, PasswordResetConfirmView
+from .views import GenerateReportView, LogoutView
+#from .views_reports import GenerateReportView
 
 urlpatterns = [
     path("auth/signup/", views.SignupView.as_view(), name="signup"),
@@ -16,6 +18,8 @@ urlpatterns = [
     path("me/", views.MeView.as_view(), name="me"),
     path('auth/password/reset/', PasswordResetRequestView.as_view(), name='password_reset'),
     path('auth/password/reset/confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
+    path("reports/", GenerateReportView.as_view(), name="generate-report"),
+    path('auth/logout/', LogoutView.as_view(), name='logout'),
 ]
 
 urlpatterns += [

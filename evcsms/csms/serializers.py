@@ -11,6 +11,30 @@ from django.utils.http import urlsafe_base64_decode
 
 User = get_user_model()
 
+"""
+class ResetCommandSerializer(serializers.Serializer):
+    chargePointId = serializers.CharField()
+    type = serializers.ChoiceField(choices=["Soft", "Hard"])
+
+class GetDiagnosticsSerializer(serializers.Serializer):
+    chargePointId = serializers.CharField()
+    location = serializers.URLField()
+    retries = serializers.IntegerField(required=False, min_value=0)
+    retryInterval = serializers.IntegerField(required=False, min_value=0)
+    startTime = serializers.DateTimeField(required=False)
+    stopTime = serializers.DateTimeField(required=False)
+
+class FirmwareStatusNotificationSerializer(serializers.Serializer):
+    chargePointId = serializers.CharField()
+    status = serializers.ChoiceField(  # accepted but we will ignore; see note below
+        choices=[
+            "Idle","Downloaded","DownloadFailed","Downloading",
+            "Installing","Installed","InstallationFailed"
+        ],
+        required=False
+    )
+"""
+
 class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
 

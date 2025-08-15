@@ -3,6 +3,7 @@ from django.utils import timezone
 from csms.models import ChargePoint, CPCommand
 from asgiref.sync import sync_to_async
 
+
 # ── plain sync helper ───────────────────────────────────────────
 def enqueue(cp_id: str, action: str, params: dict):
     """
@@ -27,3 +28,4 @@ def next_for(cp_id: str):
     cmd.done_at = timezone.now()
     cmd.save(update_fields=["done_at"])
     return cmd.action, cmd.payload
+

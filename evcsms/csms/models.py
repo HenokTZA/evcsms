@@ -8,40 +8,34 @@ from django.utils import timezone
 from decimal import Decimal, ROUND_HALF_UP
 
 # ──────────────────────────────────────────
-#  AUTH – three user roles
+#  AUTH – two user roles
 # ──────────────────────────────────────────
 class User(AbstractUser):
     ROLE_CHOICES = (
-        ("customer", "Customer"),
-        ("admin",    "Site Admin"),
-        ("root",     "Super Admin"),
+        ("user",         "Normal user"),
+        ("super_admin",  "Super Admin"),
     )
-    role = models.CharField(max_length=10, choices=ROLE_CHOICES,
-                            default="customer")
+    role = models.CharField(max_length=12, choices=ROLE_CHOICES, default="user")
 
     # helpers
     @property
-    def is_customer(self):   return self.role == "customer"
+    def is_normal_user(self) -> bool:
+        return self.role == "user"
+
     @property
-    def is_cp_admin(self):   return self.role == "admin"
+    def is_super_admin(self) -> bool:
+        return self.role == "super_admin"
+
+    # Backward-compat so old code doesn't explode (optional but handy)
     @property
-    def is_root_admin(self): return self.role == "root"
+    def is_customer(self):   return self.is_normal_user
+    @property
+    def is_cp_admin(self):   return self.is_super_admin
+    @property
+    def is_root_admin(self): return self.is_super_admin
 
-"""
-# ──────────────────────────────────────────
-#  TENANT  (one per super-admin)
-# ──────────────────────────────────────────
-class Tenant(models.Model):
 
-    owner      = models.OneToOneField(User, on_delete=models.CASCADE,
-                                      related_name="tenant")
-    name       = models.CharField(max_length=100, blank=True)
-    ws_secret  = models.CharField(max_length=32, unique=True)
-    created_at = models.DateTimeField(auto_now_add=True)
 
-    def __str__(self):
-        return self.name or f"tenant-{self.pk}"
-"""
 
 
 class Tenant(models.Model):

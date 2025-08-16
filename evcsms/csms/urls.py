@@ -20,12 +20,10 @@ urlpatterns = [
     path('auth/password/reset/confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
     path("reports/", GenerateReportView.as_view(), name="generate-report"),
     path('auth/logout/', LogoutView.as_view(), name='logout'),
+    path("charge-points/", views.ChargePointList.as_view(), name="cp-list"),
+    path("charge-points/<slug:pk>/", views.ChargePointDetail.as_view(), name="cp-detail"),
+    path("charge-points/by-code/<slug:cp_id>/", views.ChargePointByCode.as_view(), name="cp-by-code"),
+    path("charge-points/<slug:pk>/command/", views.ChargePointCommand.as_view(), name="cp-command"),
 ]
 
-urlpatterns += [
-    path("charge-points/<pk>/",                    # GET single CP
-         views.ChargePointDetail.as_view()),
 
-    path("charge-points/<pk>/command/",            # POST command
-         views.ChargePointCommand.as_view()),
-]

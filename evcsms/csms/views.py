@@ -31,6 +31,7 @@ from .serializers import (
 )
 from .permissions import IsRootAdmin, IsCpAdmin   # keep for later fine-graining
 from .helpers     import _tenant_qs
+from .permissions import IsAdminOrReadOnly
 
 from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
@@ -55,6 +56,9 @@ from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from django.utils.timezone import now
 from typing import Any, Dict
 from csms.ocpp_hub import hub
+
+from .serializers import PublicSignupSerializer
+from django.conf import settings
 #from .ocpp_bridge import send_cp_command
 
 
@@ -288,18 +292,21 @@ class PasswordResetConfirmView(generics.GenericAPIView):
 
 class ChargePointList(generics.ListAPIView):
     serializer_class   = ChargePointSerializer
-    permission_classes = [IsRootAdmin | IsCpAdmin]
-    """
-    def get_queryset(self):
-        return _tenant_qs(
-            ChargePoint,
-            self.request.user,
-            with_owner_split=True,
-        )
-    """
-    def get_queryset(self):
-        return _tenant_qs(ChargePoint, self.request.user)
+    permission_classes = [IsAdminOrReadOnly]
+    queryset           = ChargePoint.objects.all()  # ← NO tenant filter
 
+class ChargePointDetail(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class   = ChargePointSerializer
+    permission_classes = [IsAdminOrReadOnly]
+    queryset = ChargePoint.objects.all()
+    lookup_field       = "pk"  # default anyway; explicit for clarity
+
+
+class ChargePointByCode(generics.RetrieveAPIView):
+    serializer_class   = ChargePointSerializer
+    permission_classes = [IsAdminOrReadOnly]
+    lookup_field = "cp_id"      # adjust to your field name that stores "THIRD"
+    queryset = ChargePoint.objects.all()
 
 
 class TransactionList(generics.ListAPIView):
@@ -338,14 +345,16 @@ class RecentSessions(generics.ListAPIView):
 # ────────────────────────────────────────────────────────────────
 #  Auth / profile
 # ────────────────────────────────────────────────────────────────
-class SignupView(APIView):
+class SignupView(generics.CreateAPIView):
     permission_classes = [permissions.AllowAny]
+    serializer_class = PublicSignupSerializer
 
-    def post(self, request):
-        ser = SignUpSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        ser.save()
-        return Response({"detail": "account created"}, status=status.HTTP_201_CREATED)
+    def perform_create(self, serializer):
+        role = serializer.validated_data.get("role", "user")
+        if not settings.ALLOW_PUBLIC_SUPER_ADMIN_SIGNUP and role == "super_admin":
+            # Force downgrade if the flag is off
+            serializer.validated_data["role"] = "user"
+        serializer.save()
 
 
 class LoginView(TokenObtainPairView):

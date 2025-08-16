@@ -5,6 +5,10 @@ from datetime import timedelta
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+def _truthy(x): return str(x).lower() in {"1","true","yes","on"}
+ALLOW_PUBLIC_SUPER_ADMIN_SIGNUP = _truthy(os.getenv("ALLOW_PUBLIC_SUPER_ADMIN_SIGNUP", "false"))
+
+
 # where you keep custom settings
 PUBLIC_HOST = "147.93.127.215"     # ← your server’s public IP or domain
 

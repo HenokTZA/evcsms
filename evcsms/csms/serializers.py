@@ -8,32 +8,25 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.http import urlsafe_base64_decode
+from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
-"""
-class ResetCommandSerializer(serializers.Serializer):
-    chargePointId = serializers.CharField()
-    type = serializers.ChoiceField(choices=["Soft", "Hard"])
+class PublicSignupSerializer(serializers.ModelSerializer):
+    role = serializers.ChoiceField(choices=("user", "super_admin"))
 
-class GetDiagnosticsSerializer(serializers.Serializer):
-    chargePointId = serializers.CharField()
-    location = serializers.URLField()
-    retries = serializers.IntegerField(required=False, min_value=0)
-    retryInterval = serializers.IntegerField(required=False, min_value=0)
-    startTime = serializers.DateTimeField(required=False)
-    stopTime = serializers.DateTimeField(required=False)
+    class Meta:
+        model = User
+        fields = ("username", "email", "password", "role")
+        extra_kwargs = {"password": {"write_only": True}}
 
-class FirmwareStatusNotificationSerializer(serializers.Serializer):
-    chargePointId = serializers.CharField()
-    status = serializers.ChoiceField(  # accepted but we will ignore; see note below
-        choices=[
-            "Idle","Downloaded","DownloadFailed","Downloading",
-            "Installing","Installed","InstallationFailed"
-        ],
-        required=False
-    )
-"""
+    def create(self, validated_data):
+        password = validated_data.pop("password")
+        user = User.objects.create_user(**validated_data)
+        user.set_password(password)
+        user.save()
+        return user
+
 
 class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
@@ -70,34 +63,34 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
 
 
 class ChargePointSerializer(serializers.ModelSerializer):
+    owner_username = serializers.SerializerMethodField()
+    pk = serializers.CharField(read_only=True)
+    id = serializers.SerializerMethodField()    # ← compatibility alias
+
     class Meta:
         model  = ChargePoint
-        # ↓ This is probably where the wrong names are listed
         fields = [
-            "id",           # primary key
-            "name",
-            "connector_id",
-            "status",
-            "updated",      # <- correct timestamp field
-            # "created",    # <- REMOVE or rename to "updated"
-            # "cp_id",      # <- REMOVE (model doesn’t have this)
-            "price_per_kwh",
-            "price_per_hour",
-            "location",
-            "lat",
-            "lng",
+           "pk", "id" , "name", "connector_id", "status", "updated",
+            "price_per_kwh", "price_per_hour",
+            "location", "lat", "lng",
+            "owner_username",
         ]
-        read_only_fields = ["id", "updated"]
 
-    def validate_lat(self, v):
-        if v is not None and not (-90 <= float(v) <= 90):
-            raise serializers.ValidationError("Latitude must be between -90 and 90.")
-        return v
+    def get_id(self, obj):             # ← stringify whatever the pk is
+        return str(obj.pk)
 
-    def validate_lng(self, v):
-        if v is not None and not (-180 <= float(v) <= 180):
-            raise serializers.ValidationError("Longitude must be between -180 and 180.")
-        return v
+    def get_owner_username(self, obj):
+        for attr in ("owner", "created_by", "user"):
+            u = getattr(obj, attr, None)
+            if isinstance(u, User):
+                return getattr(u, "username", None)
+        tenant = getattr(obj, "tenant", None)
+        if tenant and getattr(tenant, "owner", None):
+            return getattr(tenant.owner, "username", None)
+        return None
+
+
+
 
 
 

@@ -29,7 +29,7 @@ from .serializers import (
     PasswordResetRequestSerializer,
     PasswordResetConfirmSerializer,
 )
-from .permissions import IsRootAdmin, IsCpAdmin   # keep for later fine-graining
+from .permissions import IsRootAdmin, IsCpAdmin, IsAdminOrReadOnly   # keep for later fine-graining
 from .helpers     import _tenant_qs
 from .permissions import IsAdminOrReadOnly
 
@@ -38,6 +38,7 @@ from django.contrib.auth.tokens import default_token_generator
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
 from django.core.mail import send_mail
+from django.db.models import Q
 
 from io import BytesIO
 from decimal import Decimal
@@ -66,6 +67,45 @@ User = get_user_model()
 # ────────────────────────────────────────────────────────────────
 #  Helpers
 # ────────────────────────────────────────────────────────────────
+
+def _is_super_admin(user):
+    # Works for: role field, legacy roles, Django flags, even when user is a SimpleLazyObject
+    u = getattr(user, "_wrapped", user)  # unwrap if needed
+    role = (getattr(u, "role", None) or "").lower()
+    legacy_super = {"super_admin", "root", "admin", "cp_admin"}
+    return (
+        role in legacy_super
+        or getattr(u, "is_super_admin", False)
+        or getattr(u, "is_superuser", False)
+        or getattr(u, "is_staff", False)   # include only if staff means super in your app
+    )
+
+def _cp_queryset_for_user(user):
+    qs = ChargePoint.objects.all()
+
+    # Normal users see ALL CPs
+    if not _is_super_admin(user):
+        return qs
+
+    # Super admins see ONLY their CPs
+    field_names = {f.name for f in ChargePoint._meta.get_fields()}
+    cond = Q()
+
+    # Try common direct owner fields
+    for fname in ("owner", "created_by", "user", "added_by", "admin", "cp_admin"):
+        if fname in field_names:
+            cond |= Q(**{fname: user})
+
+    # Fallback via tenant.owner (if present)
+    try:
+        cond |= Q(tenant__owner=user)
+    except Exception:
+        pass
+
+    # If nothing matched, show none (avoid leaking others’ CPs)
+    return qs.filter(cond) if cond else qs.none()
+
+
 
 class LogoutView(APIView):
     # permission_classes = [IsAuthenticated]  # ← remove; allow anonymous
@@ -293,20 +333,39 @@ class PasswordResetConfirmView(generics.GenericAPIView):
 class ChargePointList(generics.ListAPIView):
     serializer_class   = ChargePointSerializer
     permission_classes = [IsAdminOrReadOnly]
-    queryset           = ChargePoint.objects.all()  # ← NO tenant filter
+    def get_queryset(self):
+        return _cp_queryset_for_user(self.request.user)
+
+    def perform_create(self, serializer):
+        # make sure we stamp ownership on create so filtering works
+        user = self.request.user
+        data = {}
+        # Prefer explicit owner field if it exists
+        if "owner" in {f.name for f in ChargePoint._meta.get_fields()}:
+            data["owner"] = user
+        # else, if you use tenant.owner, ensure tenant defaults to user's tenant here
+        serializer.save(**data)
 
 class ChargePointDetail(generics.RetrieveUpdateDestroyAPIView):
     serializer_class   = ChargePointSerializer
     permission_classes = [IsAdminOrReadOnly]
-    queryset = ChargePoint.objects.all()
-    lookup_field       = "pk"  # default anyway; explicit for clarity
+    def get_queryset(self):
+        return _cp_queryset_for_user(self.request.user)
+    #lookup_field       = "pk"  # default anyway; explicit for clarity
 
 
 class ChargePointByCode(generics.RetrieveAPIView):
     serializer_class   = ChargePointSerializer
     permission_classes = [IsAdminOrReadOnly]
     lookup_field = "cp_id"      # adjust to your field name that stores "THIRD"
-    queryset = ChargePoint.objects.all()
+    def get_queryset(self):
+        # Scope by role exactly like the others
+        return _cp_queryset_for_user(self.request.user)
+
+    # Optional: case-insensitive lookup
+    def get_object(self):
+        code = self.kwargs["cp_id"]
+        return generics.get_object_or_404(self.get_queryset(), cp_id__iexact=code)
 
 
 class TransactionList(generics.ListAPIView):

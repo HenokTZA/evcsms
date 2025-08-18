@@ -6,7 +6,7 @@ from csms import views
 from django.urls import path
 from . import views
 from .views      import SignupView, LoginView, ChargePointList, TransactionList, ChargePointDetail, PasswordResetRequestView, PasswordResetConfirmView
-from .views import GenerateReportView, LogoutView
+from .views import GenerateReportView, LogoutView, PublicChargePointList, PublicChargePointDetail
 #from .views_reports import GenerateReportView
 
 urlpatterns = [
@@ -24,6 +24,8 @@ urlpatterns = [
     path("charge-points/<slug:pk>/", views.ChargePointDetail.as_view(), name="cp-detail"),
     path("charge-points/by-code/<slug:cp_id>/", views.ChargePointByCode.as_view(), name="cp-by-code"),
     path("charge-points/<slug:pk>/command/", views.ChargePointCommand.as_view(), name="cp-command"),
+    path("public/charge-points/",            PublicChargePointList.as_view(),   name="public-cp-list"),
+    path("public/charge-points/<pk>/",       PublicChargePointDetail.as_view(), name="public-cp-detail"),
 ]
 
 

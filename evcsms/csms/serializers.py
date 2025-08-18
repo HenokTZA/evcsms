@@ -12,6 +12,33 @@ from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
+
+class PublicChargePointSerializer(serializers.ModelSerializer):
+    owner_username = serializers.SerializerMethodField()
+    address        = serializers.CharField(source='location', read_only=True)
+    availability   = serializers.SerializerMethodField()
+    pk             = serializers.CharField(source='id', read_only=True)  # helps the React map link
+
+    class Meta:
+        model  = ChargePoint
+        fields = [
+            "id", "pk", "name", "connector_id", "status", "availability", "updated",
+            "price_per_kwh", "price_per_hour",
+            "location", "address", "lat", "lng",
+            "owner_username",
+        ]
+
+    def get_owner_username(self, obj):
+        try:
+            return obj.tenant.owner.username
+        except Exception:
+            return None
+
+    def get_availability(self, obj):
+        return obj.status or "Unknown"
+
+
+
 class PublicSignupSerializer(serializers.ModelSerializer):
     role = serializers.ChoiceField(choices=("user", "super_admin"))
 

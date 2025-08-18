@@ -62,6 +62,8 @@ from .serializers import PublicSignupSerializer
 from django.conf import settings
 #from .ocpp_bridge import send_cp_command
 
+from .serializers import PublicChargePointSerializer
+
 
 User = get_user_model()
 # ────────────────────────────────────────────────────────────────
@@ -104,6 +106,28 @@ def _cp_queryset_for_user(user):
 
     # If nothing matched, show none (avoid leaking others’ CPs)
     return qs.filter(cond) if cond else qs.none()
+
+
+class PublicChargePointList(generics.ListAPIView):
+    """
+    GET /api/public/charge-points/
+    Logged-in normal users see CPs under tenants owned by superadmins (role='root').
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class   = PublicChargePointSerializer
+
+    def get_queryset(self):
+        return ChargePoint.objects.filter(tenant__owner__role='root')
+
+class PublicChargePointDetail(generics.RetrieveAPIView):
+    """
+    GET /api/public/charge-points/<id>/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class   = PublicChargePointSerializer
+
+    def get_queryset(self):
+        return ChargePoint.objects.filter(tenant__owner__role='root')
 
 
 

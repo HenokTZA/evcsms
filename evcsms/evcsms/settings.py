@@ -146,3 +146,13 @@ EMAIL_USE_SSL      = True
 # so you can leave EMAIL_USE_TLS = False (or omit it entirely)
 DEFAULT_FROM_EMAIL = "H-Craft <test@habm-lab.com>"
 
+
+DJANGO_SECRET_KEY = "replace-this-with-a-strong-random-string"
+
+STRIPE_SECRET_KEY = "REDACTED_STRIPE_SECRET"
+STRIPE_PUBLIC_KEY = "pk_test_51RwrkXPGs5BB0JiyrsYF7UvNf6VrWbB1ln02d1evYSE0Ly1V5uMnwIS4T6gW4zQ4zxO7CJ3wcmpJLQUxrtSd7Cai00Z297Sgdn"
+
+# Your frontend’s base URL for the Stripe success/cancel redirects
+FRONTEND_BASE = "http://147.93.127.215:5173"
+
+

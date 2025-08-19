@@ -12,7 +12,7 @@ from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
-
+"""
 class PublicChargePointSerializer(serializers.ModelSerializer):
     owner_username = serializers.SerializerMethodField()
     address        = serializers.CharField(source='location', read_only=True)
@@ -36,6 +36,47 @@ class PublicChargePointSerializer(serializers.ModelSerializer):
 
     def get_availability(self, obj):
         return obj.status or "Unknown"
+"""
+
+
+class PublicChargePointSerializer(serializers.ModelSerializer):
+    owner_username = serializers.SerializerMethodField()
+    address        = serializers.CharField(source='location', read_only=True)
+    availability   = serializers.SerializerMethodField()
+    pk             = serializers.CharField(source='id', read_only=True)
+    current_kwh    = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = ChargePoint
+        fields = [
+            "id", "pk", "name", "connector_id", "status", "availability",
+            "updated", "price_per_kwh", "price_per_hour",
+            "location", "address", "lat", "lng",
+            "owner_username", "current_kwh",
+        ]
+
+    def get_owner_username(self, obj):
+        try:
+            return obj.tenant.owner.username
+        except Exception:
+            return None
+
+    def get_availability(self, obj):
+        return obj.status or "Unknown"
+
+    def get_current_kwh(self, obj):
+        tx = Transaction.objects.filter(cp=obj).order_by("-start_time").first()
+        if not tx:
+            return 0.0
+        wh_start  = tx.start_wh  or 0.0
+        wh_latest = tx.latest_wh or wh_start
+        try:
+            val = max(0.0, (wh_latest - wh_start) / 1000.0)
+            # 3 decimals is enough for UI
+            return round(val, 6)
+        except Exception:
+            return 0.0
+
 
 
 

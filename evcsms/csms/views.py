@@ -64,8 +64,12 @@ from django.conf import settings
 
 from .serializers import PublicChargePointSerializer
 
+import stripe
+from .ocpp_bridge import enqueue
 
 User = get_user_model()
+stripe.api_key = settings.STRIPE_SECRET_KEY
+
 # ────────────────────────────────────────────────────────────────
 #  Helpers
 # ────────────────────────────────────────────────────────────────
@@ -128,6 +132,91 @@ class PublicChargePointDetail(generics.RetrieveAPIView):
 
     def get_queryset(self):
         return ChargePoint.objects.filter(tenant__owner__role='root')
+
+
+
+class PublicCreateCheckoutSession(APIView):
+    """
+    POST /api/public/charge-points/<pk>/checkout/
+    Body: { "amount_cents": 500, "currency": "eur" }  # defaults ok
+    Returns: { "url": "https://checkout.stripe.com/..." }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        cp = get_object_or_404(ChargePoint, pk=pk, tenant__owner__role='root')
+        amount_cents = int(request.data.get("amount_cents", 500))  # €5 default top-up
+        currency     = request.data.get("currency", "eur")
+
+        success_url = f"{settings.FRONTEND_BASE}/app/map/{cp.pk}?session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url  = f"{settings.FRONTEND_BASE}/app/map/{cp.pk}?cancelled=1"
+
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": currency,
+                    "product_data": {"name": f"Charging session for {cp.name or cp.pk}"},
+                    "unit_amount": amount_cents,
+                },
+                "quantity": 1,
+            }],
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={
+                "cp_id": cp.pk,
+                "user_id": str(request.user.id),
+                "user_email": request.user.email or "",
+            }
+        )
+        return Response({"url": session.url}, status=200)
+
+
+class PublicStartAfterCheckout(APIView):
+    """
+    POST /api/public/charge-points/<pk>/start-after-checkout/
+    Body: { "session_id": "cs_test_..." }
+    Verifies payment == paid and then enqueues RemoteStartTransaction.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        cp = get_object_or_404(ChargePoint, pk=pk, tenant__owner__role='root')
+        session_id = request.data.get("session_id")
+        if not session_id:
+            return Response({"detail": "session_id required"}, status=400)
+
+        ses = stripe.checkout.Session.retrieve(session_id)
+        if ses.get("payment_status") != "paid":
+            return Response({"detail": "Payment not completed"}, status=400)
+
+        # Start charging using connector_id and an idTag for this user
+        id_tag = request.user.username or request.user.email or "user"
+        enqueue(cp.id, "RemoteStartTransaction", {
+            "connectorId": cp.connector_id,
+            "idTag": id_tag
+        })
+
+        return Response({"detail": "started"}, status=200)
+
+
+class PublicStopCharging(APIView):
+    """
+    POST /api/public/charge-points/<pk>/stop/
+    Finds active tx on cp and enqueues RemoteStopTransaction.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        cp = get_object_or_404(ChargePoint, pk=pk, tenant__owner__role='root')
+        tx = Transaction.objects.filter(cp=cp, stop_time__isnull=True).order_by("-start_time").first()
+        if not tx:
+            return Response({"detail": "No active session"}, status=404)
+
+        enqueue(cp.id, "RemoteStopTransaction", {"transactionId": tx.tx_id})
+        return Response({"detail": "stopping"}, status=200)
+
 
 
 

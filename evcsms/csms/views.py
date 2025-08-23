@@ -2,7 +2,7 @@
 # csms/views.py
 from __future__ import annotations
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -121,7 +121,7 @@ class PublicChargePointList(generics.ListAPIView):
     serializer_class   = PublicChargePointSerializer
 
     def get_queryset(self):
-        return ChargePoint.objects.filter(tenant__owner__role='root')
+        return ChargePoint.objects.filter(tenant__owner__role='super_admin')
 
 class PublicChargePointDetail(generics.RetrieveAPIView):
     """
@@ -131,7 +131,7 @@ class PublicChargePointDetail(generics.RetrieveAPIView):
     serializer_class   = PublicChargePointSerializer
 
     def get_queryset(self):
-        return ChargePoint.objects.filter(tenant__owner__role='root')
+        return ChargePoint.objects.filter(tenant__owner__role='super_admin')
 
 
 
@@ -144,7 +144,7 @@ class PublicCreateCheckoutSession(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        cp = get_object_or_404(ChargePoint, pk=pk, tenant__owner__role='root')
+        cp = get_object_or_404(ChargePoint, pk=pk, tenant__owner__role='super_admin')
         amount_cents = int(request.data.get("amount_cents", 500))  # €5 default top-up
         currency     = request.data.get("currency", "eur")
 
@@ -182,7 +182,7 @@ class PublicStartAfterCheckout(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        cp = get_object_or_404(ChargePoint, pk=pk, tenant__owner__role='root')
+        cp = get_object_or_404(ChargePoint, pk=pk, tenant__owner__role='super_admin')
         session_id = request.data.get("session_id")
         if not session_id:
             return Response({"detail": "session_id required"}, status=400)
@@ -413,6 +413,7 @@ class GenerateReportView(APIView):
 
 class PasswordResetRequestView(generics.GenericAPIView):
     serializer_class = PasswordResetRequestSerializer
+    permission_classes = [AllowAny]
 
     def post(self, request):
         ser = self.get_serializer(data=request.data)
@@ -434,6 +435,7 @@ class PasswordResetRequestView(generics.GenericAPIView):
 
 class PasswordResetConfirmView(generics.GenericAPIView):
     serializer_class = PasswordResetConfirmSerializer
+    permission_classes = [AllowAny]
 
     def post(self, request):
         ser = self.get_serializer(data=request.data)
@@ -517,6 +519,7 @@ class RecentSessions(generics.ListAPIView):
 # ────────────────────────────────────────────────────────────────
 #  Auth / profile
 # ────────────────────────────────────────────────────────────────
+"""
 class SignupView(generics.CreateAPIView):
     permission_classes = [permissions.AllowAny]
     serializer_class = PublicSignupSerializer
@@ -527,6 +530,17 @@ class SignupView(generics.CreateAPIView):
             # Force downgrade if the flag is off
             serializer.validated_data["role"] = "user"
         serializer.save()
+"""
+
+class SignupView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        ser = SignUpSerializer(data=request.data)
+        if ser.is_valid():
+            ser.save()
+            return Response({"detail": "ok"}, status=status.HTTP_201_CREATED)
+        return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class LoginView(TokenObtainPairView):

@@ -9,8 +9,24 @@ from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.http import urlsafe_base64_decode
 from django.contrib.auth import get_user_model
+from django.db import transaction, IntegrityError
+import secrets
+
 
 User = get_user_model()
+
+ROLE_CHOICES = (
+    ("user", "Normal user"),
+    ("super_admin", "Super Admin"),
+)
+
+
+
+def gen_ws_key():
+    # ~24 chars urlsafe (good entropy, short-ish)
+    return secrets.token_hex(16)       # 32 hex chars, e.g. 963f...70ae1
+
+
 
 """
 class PublicChargePointSerializer(serializers.ModelSerializer):
@@ -191,7 +207,7 @@ class TransactionSerializer(serializers.ModelSerializer):
         fields = ["id","cp","user","kWh","Started","Ended","price_kwh","price_hour","total"]
 
 
-
+"""
 class SignUpSerializer(serializers.ModelSerializer):
     # we want the raw password only on input, never on output
     password = serializers.CharField(
@@ -221,6 +237,97 @@ class SignUpSerializer(serializers.ModelSerializer):
             )
 
         return user
+"""
+
+"""
+class SignUpSerializer(serializers.ModelSerializer):
+    # accept only the two roles you support
+    role = serializers.ChoiceField(choices=[c[0] for c in ROLE_CHOICES], default="user")
+    password = serializers.CharField(write_only=True, min_length=8, style={"input_type": "password"})
+
+    class Meta:
+        model  = User
+        fields = ("username", "email", "password", "role")
+
+    def create(self, validated_data):
+        role = validated_data.pop("role", "user")
+        password = validated_data.pop("password")
+        user = User(**validated_data)
+        user.role = role                    # ← persist requested role
+        user.set_password(password)
+        user.save()
+        return user
+"""
+
+"""
+class SignUpSerializer(serializers.ModelSerializer):
+    role = serializers.ChoiceField(choices=["user", "super_admin"], default="user")
+    password = serializers.CharField(write_only=True, min_length=8)
+
+    class Meta:
+        model  = User
+        fields = ("username", "email", "password", "role")
+
+    def create(self, vd):
+        role = vd.pop("role", "user")
+        pwd  = vd.pop("password")
+
+        u = User(**vd)
+        u.role = role
+        u.set_password(pwd)
+        u.save()
+
+        # Auto-create tenant for super_admin with a unique ws_key
+        if role == "super_admin":
+            base_name = f"{u.username or 'Owner'}'s Tenant"
+
+            # Try a few times in case of extremely unlikely key collision
+            for _ in range(5):
+                try:
+                    with transaction.atomic():
+                        Tenant.objects.create(
+                            owner=u,
+                            name=base_name,
+                            ws_key=gen_ws_key(),   # <<--- IMPORTANT
+                        )
+                    break
+                except IntegrityError as e:
+                    # If collision on ws_key, loop and try a new key; otherwise re-raise
+                    if "csms_tenant.ws_key" in str(e):
+                        continue
+                    raise
+        return u
+"""
+
+class SignUpSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True)
+
+    class Meta:
+        model = User
+        fields = ("username", "email", "password", "role")
+
+    def validate(self, attrs):
+        email = (attrs.get("email") or attrs.get("username") or "").strip()
+        if not email:
+            raise serializers.ValidationError({"username": "Email/username is required."})
+        if User.objects.filter(email__iexact=email).exists():
+            raise serializers.ValidationError({"username": "That email is already in use."})
+        attrs["email"] = email
+        return attrs
+
+    def create(self, validated):
+        role = validated.pop("role", "root")
+        password = validated.pop("password")
+        user = User(role=role, **validated)
+        user.set_password(password)
+        try:
+            with transaction.atomic():
+                user.save()
+        except IntegrityError:
+            # DB-level safety (race conditions)
+            raise serializers.ValidationError({"username": "That email is already in use."})
+        return user
+
 
 
 

@@ -3,6 +3,7 @@ from .models import ChargePoint, Transaction, User, Tenant
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework.validators import UniqueValidator
+from django.contrib.auth.password_validation import validate_password
 import uuid
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -299,34 +300,64 @@ class SignUpSerializer(serializers.ModelSerializer):
         return u
 """
 
+
 class SignUpSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True)
+    role       = serializers.ChoiceField(choices=["user", "super_admin"], default="user")
+    full_name  = serializers.CharField(write_only=True, required=True, max_length=150)
+    phone      = serializers.CharField(write_only=True, required=False, allow_blank=True, max_length=32)
+    password   = serializers.CharField(write_only=True, min_length=8)
+    password2  = serializers.CharField(write_only=True)
 
     class Meta:
-        model = User
-        fields = ("username", "email", "password", "role")
+        model  = User
+        fields = ("username", "email", "password", "password2", "role", "full_name", "phone")
+        extra_kwargs = {
+            "email": {"required": True},
+        }
 
     def validate(self, attrs):
-        email = (attrs.get("email") or attrs.get("username") or "").strip()
-        if not email:
-            raise serializers.ValidationError({"username": "Email/username is required."})
-        if User.objects.filter(email__iexact=email).exists():
-            raise serializers.ValidationError({"username": "That email is already in use."})
-        attrs["email"] = email
+        # Confirm password
+        if attrs.get("password") != attrs.get("password2"):
+            raise serializers.ValidationError({"password2": "Passwords do not match."})
+        # Django’s password validators (min length, common, numeric, etc.)
+        validate_password(attrs["password"])
         return attrs
 
-    def create(self, validated):
-        role = validated.pop("role", "root")
-        password = validated.pop("password")
-        user = User(role=role, **validated)
-        user.set_password(password)
-        try:
-            with transaction.atomic():
-                user.save()
-        except IntegrityError:
-            # DB-level safety (race conditions)
-            raise serializers.ValidationError({"username": "That email is already in use."})
-        return user
+    @transaction.atomic
+    def create(self, vd):
+        role       = vd.pop("role", "user")
+        pwd        = vd.pop("password")
+        _pwd2      = vd.pop("password2", None)
+        full_name  = vd.pop("full_name", "").strip()
+        phone      = vd.pop("phone", "").strip()
+
+        # vd now holds model fields like username, email
+        u = User(**vd)
+        u.role = role
+        u.first_name = full_name  # store full name (or split into first/last if you prefer)
+        if hasattr(u, "phone"):
+            u.phone = phone
+        u.set_password(pwd)
+        u.save()
+
+        # Auto-create tenant for super_admin with a unique ws_key
+        if role == "super_admin":
+            base_name = f"{u.username or 'Owner'}'s Tenant"
+            for _ in range(5):
+                try:
+                    Tenant.objects.create(
+                        owner=u,
+                        name=base_name,
+                        ws_key=gen_ws_key(),  # keep your existing generator
+                    )
+                    break
+                except IntegrityError as e:
+                    # Retry only if the unique key collided
+                    if "csms_tenant.ws_key" in str(e):
+                        continue
+                    raise
+
+        return u
 
 
 

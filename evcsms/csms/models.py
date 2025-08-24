@@ -16,6 +16,7 @@ class User(AbstractUser):
         ("super_admin",  "Super Admin"),
     )
     role = models.CharField(max_length=12, choices=ROLE_CHOICES, default="user")
+    phone = models.CharField(max_length=32, blank=True)
 
     # helpers
     @property

@@ -58,6 +58,8 @@ from django.utils.timezone import now
 from typing import Any, Dict
 from csms.ocpp_hub import hub
 
+from django.db.models import Count
+
 from .serializers import PublicSignupSerializer
 from django.conf import settings
 #from .ocpp_bridge import send_cp_command
@@ -110,6 +112,51 @@ def _cp_queryset_for_user(user):
 
     # If nothing matched, show none (avoid leaking others’ CPs)
     return qs.filter(cond) if cond else qs.none()
+
+
+class AdminCPStatusStats(APIView):
+    """
+    GET /api/admin/charge-points/stats/
+    Returns:
+    {
+      "by_status": {"Available": 3, "Charging": 2, ...},
+      "totals":    {"available": 3, "unavailable": 1, "charging": 2, "occupied": 0, "preparing": 1, "other": 0}
+    }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        # Only super_admin’s own CPs
+        qs = ChargePoint.objects.filter(tenant__owner=user)
+
+        # Aggregate by raw status value
+        rows = qs.values("status").annotate(count=Count("id")).order_by()
+        by_status = { (r["status"] or "Unknown"): r["count"] for r in rows }
+
+        # Build the requested buckets (case-insensitive)
+        lm = { (k or "unknown").lower(): v for k, v in by_status.items() }
+        available   = lm.get("available", 0)
+        unavailable = lm.get("unavailable", 0)
+        charging    = lm.get("charging", 0)
+        occupied    = lm.get("occupied", 0)
+        preparing   = lm.get("preparing", 0)
+        other = sum(lm.values()) - (available + unavailable + charging + occupied + preparing)
+
+        data = {
+            "by_status": by_status,
+            "totals": {
+                "available": available,
+                "unavailable": unavailable,
+                "charging": charging,
+                "occupied": occupied,
+                "preparing": preparing,
+                "other": other,
+            },
+        }
+        return Response(data, status=200)
+
+
 
 
 class PublicChargePointList(generics.ListAPIView):

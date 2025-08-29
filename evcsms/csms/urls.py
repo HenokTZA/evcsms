@@ -5,7 +5,7 @@ from rest_framework_simplejwt.views import (
 from csms import views
 from django.urls import path
 from . import views
-from .views      import SignupView, LoginView, ChargePointList, TransactionList, ChargePointDetail, PasswordResetRequestView, PasswordResetConfirmView
+from .views      import SignupView, LoginView, ChargePointList, TransactionList, ChargePointDetail, PasswordResetRequestView, PasswordResetConfirmView, AdminCPStatusStats
 from .views import GenerateReportView, LogoutView, PublicChargePointList, PublicChargePointDetail, PublicCreateCheckoutSession, PublicStartAfterCheckout, PublicStopCharging
 #from .views_reports import GenerateReportView
 
@@ -29,6 +29,7 @@ urlpatterns = [
     path("public/charge-points/<pk>/checkout/",         PublicCreateCheckoutSession.as_view(), name="public-cp-checkout"),
     path("public/charge-points/<pk>/start-after-checkout/", PublicStartAfterCheckout.as_view(), name="public-cp-start"),
     path("public/charge-points/<pk>/stop/",             PublicStopCharging.as_view(),      name="public-cp-stop"),
+    path("admin/charge-points/stats/", views.AdminCPStatusStats.as_view()),
 ]
 
 

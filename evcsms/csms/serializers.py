@@ -411,10 +411,13 @@ class MeSerializer(serializers.ModelSerializer):
     # extra read-only fields
     tenant_id = serializers.SerializerMethodField()
     tenant_ws = serializers.SerializerMethodField()
+    full_name  = serializers.SerializerMethodField()
+    phone      = serializers.SerializerMethodField()
+
 
     class Meta:
         model  = User
-        fields = ("id", "email", "role", "tenant_id", "tenant_ws")
+        fields = ("id", "email", "role", "tenant_id", "tenant_ws", "username", "full_name", "phone")
 
     # helpers ---------------------------------------------------------
     def _tenant(self, obj):
@@ -441,3 +444,14 @@ class MeSerializer(serializers.ModelSerializer):
         scheme  = "ws"   # you’ll switch to wss:// behind TLS
 
         return f"{scheme}://{host}/api/v16/{t.ws_key}"
+
+    def get_full_name(self, obj):
+        # Prefer a dedicated full_name field if present; else build from first/last
+        v = getattr(obj, "full_name", "") or (
+            f"{getattr(obj, 'first_name', '')} {getattr(obj, 'last_name', '')}".strip()
+        )
+        return v or None
+
+    def get_phone(self, obj):
+        # Try common field names; return None if not set
+        return getattr(obj, "phone", None) or getattr(obj, "phone_number", None)

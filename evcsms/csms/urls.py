@@ -30,6 +30,7 @@ urlpatterns = [
     path("public/charge-points/<pk>/start-after-checkout/", PublicStartAfterCheckout.as_view(), name="public-cp-start"),
     path("public/charge-points/<pk>/stop/",             PublicStopCharging.as_view(),      name="public-cp-stop"),
     path("admin/charge-points/stats/", views.AdminCPStatusStats.as_view()),
+    path("sessions/revenue/", views.SessionsRevenueStats.as_view()),
 ]
 
 

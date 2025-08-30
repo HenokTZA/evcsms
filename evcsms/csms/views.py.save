@@ -39,7 +39,6 @@ from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
 from django.core.mail import send_mail
 from django.db.models import Q
-from django.utils.timezone import now, localtime
 
 from io import BytesIO
 from decimal import Decimal
@@ -115,61 +114,6 @@ def _cp_queryset_for_user(user):
     return qs.filter(cond) if cond else qs.none()
 
 
-class SessionsRevenueStats(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request):
-        qs = _tenant_qs(Transaction, request.user).select_related("cp")
-
-        tznow = now()
-        start_of_month = tznow.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        as_dec = lambda x: Decimal(str(x or 0))
-
-        lifetime = Decimal("0")
-        month    = Decimal("0")
-
-        for t in qs:
-            cp  = getattr(t, "cp", None)
-
-            # energy part
-            kwh = as_dec(getattr(t, "kwh", None) or getattr(t, "energy", None) or 0)
-            ppk = as_dec(getattr(cp, "price_per_kwh", None) or 0)
-            by_energy = kwh * ppk
-
-            # time part (optional)
-            pph = as_dec(getattr(cp, "price_per_hour", None) or 0)
-            st  = getattr(t, "start_time", None)
-            et  = getattr(t, "stop_time", None) or getattr(t, "end_time", None)
-            by_time = Decimal("0")
-            if pph and st and et:
-                try:
-                    hours = Decimal(str(max(0.0, (et - st).total_seconds() / 3600.0)))
-                    by_time = hours * pph
-                except Exception:
-                    pass
-
-            amt = (by_energy + by_time).quantize(Decimal("0.01"))
-            lifetime += amt
-
-            # count into this month (use stop/end if present, else start)
-            pivot = et or st
-            if pivot:
-                try:
-                    when = localtime(pivot)
-                except Exception:
-                    when = pivot
-                if when >= start_of_month:
-                    month += amt
-
-        return Response({
-            "lifetime": float(lifetime),
-            "month": float(month),
-            "month_label": tznow.strftime("%B %Y"),
-        }, status=200)
-
-
-
-
 class AdminCPStatusStats(APIView):
     """
     GET /api/admin/charge-points/stats/
@@ -225,6 +169,7 @@ class PublicChargePointList(generics.ListAPIView):
 
     def get_queryset(self):
         return ChargePoint.objects.filter(tenant__owner__role='super_admin')
+
 
 class PublicChargePointDetail(generics.RetrieveAPIView):
     """
@@ -585,11 +530,17 @@ class ChargePointByCode(generics.RetrieveAPIView):
         code = self.kwargs["cp_id"]
         return generics.get_object_or_404(self.get_queryset(), cp_id__iexact=code)
 
-"""
+
 class TransactionList(generics.ListAPIView):
     serializer_class   = TransactionSerializer
     permission_classes = [permissions.IsAuthenticated]
-
+    """
+    def get_queryset(self):
+        return (
+            _tenant_qs(Transaction, self.request.user)
+            .order_by("-pk")
+        )
+    """
 
     def get_queryset(self):
         # return the current user's tenant → all their transactions
@@ -597,44 +548,12 @@ class TransactionList(generics.ListAPIView):
             _tenant_qs(Transaction, self.request.user)
             .order_by("-start_time")  # newest first
         )
-"""
-
-class TransactionList(generics.ListAPIView):
-    serializer_class   = TransactionSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        # all sessions for the current tenant/org
-        qs = (
-            _tenant_qs(Transaction, self.request.user)
-            .order_by("-start_time", "-pk")  # newest first; pk tiebreaker
-        )
-
-        # lightweight limit/offset
-        qp = self.request.query_params
-        try:
-            limit = int(qp.get("limit", "0"))
-        except (TypeError, ValueError):
-            limit = 0
-        try:
-            offset = int(qp.get("offset", "0"))
-        except (TypeError, ValueError):
-            offset = 0
-
-        if limit > 0:
-            limit = min(limit, 200)  # safety cap
-            return qs[offset: offset + limit]
-        if offset > 0:
-            # if someone passes offset without limit, give a default window
-            return qs[offset: offset + 50]
-
-        return qs
 
 
-
-"""
 class RecentSessions(generics.ListAPIView):
-
+    """
+    Convenience: just the last 10 sessions for the current tenant.
+    """
     serializer_class   = TransactionSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -643,7 +562,7 @@ class RecentSessions(generics.ListAPIView):
             _tenant_qs(Transaction, self.request.user)
             .order_by("-pk")[:10]
         )
-"""
+
 
 # ────────────────────────────────────────────────────────────────
 #  Auth / profile

@@ -7,6 +7,7 @@ from django.urls import path
 from . import views
 from .views      import SignupView, LoginView, ChargePointList, TransactionList, ChargePointDetail, PasswordResetRequestView, PasswordResetConfirmView, AdminCPStatusStats
 from .views import GenerateReportView, LogoutView, PublicChargePointList, PublicChargePointDetail, PublicCreateCheckoutSession, PublicStartAfterCheckout, PublicStopCharging
+from .views import CPUserPriceListCreate, CPUserPriceDetail
 #from .views_reports import GenerateReportView
 
 urlpatterns = [
@@ -31,6 +32,14 @@ urlpatterns = [
     path("public/charge-points/<pk>/stop/",             PublicStopCharging.as_view(),      name="public-cp-stop"),
     path("admin/charge-points/stats/", views.AdminCPStatusStats.as_view()),
     path("sessions/revenue/", views.SessionsRevenueStats.as_view()),
+    #path("charge-points/<int:pk>/user-prices/",              CPUserPriceListCreate.as_view()),
+    #path("charge-points/<int:pk>/user-prices/<int:upid>/",   CPUserPriceDetail.as_view()),
+    #path("charge-points/<slug:cp_key>/user-prices/", views.UserPriceListCreate.as_view()),
+    #path("charge-points/<slug:cp_key>/user-prices/<int:upid>/", views.UserPriceDetail.as_view()),
+    path("charge-points/<slug:pk>/user-prices/",                CPUserPriceListCreate.as_view(), name="cp-userprice-list"),
+    path("charge-points/<slug:pk>/user-prices/<int:upid>/",     CPUserPriceDetail.as_view(),     name="cp-userprice-detail"),
+
 ]
+
 
 

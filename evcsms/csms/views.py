@@ -18,7 +18,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework_simplejwt.views import TokenObtainPairView
 from csms.ocpp_bridge import enqueue
 from asgiref.sync import async_to_sync
-from .models      import ChargePoint, Transaction, Tenant
+from .models      import ChargePoint, Transaction, Tenant, ChargePointUserPrice
 from .serializers import (
     ChargePointSerializer,
     TransactionSerializer,
@@ -27,7 +27,8 @@ from .serializers import (
     TokenObtainPairPatchedSerializer,
     UserSerializer,
     PasswordResetRequestSerializer,
-    PasswordResetConfirmSerializer,
+    PasswordResetConfirmSerializer, 
+    ChargePointUserPriceSerializer,
 )
 from .permissions import IsRootAdmin, IsCpAdmin, IsAdminOrReadOnly   # keep for later fine-graining
 from .helpers     import _tenant_qs
@@ -113,6 +114,15 @@ def _cp_queryset_for_user(user):
 
     # If nothing matched, show none (avoid leaking others’ CPs)
     return qs.filter(cond) if cond else qs.none()
+
+
+def get_cp_for_user(cp_key, user):
+    """
+    Resolve a charge point the current user owns/has access to.
+    Works for both numeric and string primary keys.
+    """
+    qs = _tenant_qs(ChargePoint, user)
+    return get_object_or_404(qs, pk=cp_key)
 
 
 class SessionsRevenueStats(APIView):
@@ -226,6 +236,11 @@ class PublicChargePointList(generics.ListAPIView):
     def get_queryset(self):
         return ChargePoint.objects.filter(tenant__owner__role='super_admin')
 
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
 class PublicChargePointDetail(generics.RetrieveAPIView):
     """
     GET /api/public/charge-points/<id>/
@@ -235,6 +250,65 @@ class PublicChargePointDetail(generics.RetrieveAPIView):
 
     def get_queryset(self):
         return ChargePoint.objects.filter(tenant__owner__role='super_admin')
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+
+# ── Admin: per-user prices on a specific CP ─────────────────────────
+
+class _CPAdminMixin:
+    permission_classes = [IsAuthenticated]  # and your IsRootAdmin/IsCpAdmin if you want
+
+    def _get_cp(self, request, pk):
+        # reuse your scope helper if you want to keep tenancy filtering tight
+        cp = get_object_or_404(_tenant_qs(ChargePoint, request.user), pk=pk)
+        return cp
+
+
+class CPUserPriceListCreate(_CPAdminMixin, APIView):
+    """
+    GET  /api/charge-points/<pk>/user-prices/   → list overrides
+    POST /api/charge-points/<pk>/user-prices/   → create {email, price_per_kwh?, price_per_hour?}
+    """
+    def get(self, request, pk):
+        cp = self._get_cp(request, pk)
+        qs = cp.user_prices.select_related("user").order_by("user__email")
+        ser = ChargePointUserPriceSerializer(qs, many=True)
+        return Response(ser.data, status=200)
+
+    def post(self, request, pk):
+        cp = self._get_cp(request, pk)
+        ser = ChargePointUserPriceSerializer(data=request.data, context={"cp": cp})
+        ser.is_valid(raise_exception=True)
+        obj = ser.save()
+        return Response(ChargePointUserPriceSerializer(obj).data, status=201)
+
+
+class CPUserPriceDetail(_CPAdminMixin, APIView):
+    """
+    PATCH /api/charge-points/<pk>/user-prices/<upid>/
+    DELETE /api/charge-points/<pk>/user-prices/<upid>/
+    """
+    def _get_obj(self, request, pk, upid):
+        cp = self._get_cp(request, pk)
+        return get_object_or_404(ChargePointUserPrice, pk=upid, cp=cp)
+
+    def patch(self, request, pk, upid):
+        obj = self._get_obj(request, pk, upid)
+        ser = ChargePointUserPriceSerializer(obj, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        ser.save()
+        return Response(ser.data, status=200)
+
+    def delete(self, request, pk, upid):
+        obj = self._get_obj(request, pk, upid)
+        obj.delete()
+        return Response(status=204)
+
+
 
 
 

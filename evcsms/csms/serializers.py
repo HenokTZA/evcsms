@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import ChargePoint, Transaction, User, Tenant
+from .models import ChargePoint, Transaction, User, Tenant, ChargePointUserPrice
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework.validators import UniqueValidator
@@ -28,34 +28,42 @@ def gen_ws_key():
     return secrets.token_hex(16)       # 32 hex chars, e.g. 963f...70ae1
 
 
-
-"""
-class PublicChargePointSerializer(serializers.ModelSerializer):
-    owner_username = serializers.SerializerMethodField()
-    address        = serializers.CharField(source='location', read_only=True)
-    availability   = serializers.SerializerMethodField()
-    pk             = serializers.CharField(source='id', read_only=True)  # helps the React map link
+class ChargePointUserPriceSerializer(serializers.ModelSerializer):
+    # Admin will submit email to add; we resolve it to a User
+    email = serializers.EmailField(write_only=True, required=True)
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+    user_name  = serializers.CharField(source="user.username", read_only=True)
 
     class Meta:
-        model  = ChargePoint
-        fields = [
-            "id", "pk", "name", "connector_id", "status", "availability", "updated",
-            "price_per_kwh", "price_per_hour",
-            "location", "address", "lat", "lng",
-            "owner_username",
-        ]
+        model  = ChargePointUserPrice
+        fields = (
+            "id",
+            "user",        # read-only id for frontend if needed
+            "user_email",
+            "user_name",
+            "price_per_kwh",
+            "price_per_hour",
+            "email",       # write-only on create
+        )
+        read_only_fields = ("id", "user")
 
-    def get_owner_username(self, obj):
+    def create(self, vd):
+        email = vd.pop("email")
         try:
-            return obj.tenant.owner.username
-        except Exception:
-            return None
+            u = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            raise serializers.ValidationError({"email": "No active user with this e-mail."})
+        cp = self.context["cp"]
+        return ChargePointUserPrice.objects.create(cp=cp, user=u, **vd)
 
-    def get_availability(self, obj):
-        return obj.status or "Unknown"
+    def update(self, instance, validated_data):
+        # email cannot be changed on update
+        validated_data.pop("email", None)
+        return super().update(instance, validated_data)
+
+
+
 """
-
-
 class PublicChargePointSerializer(serializers.ModelSerializer):
     owner_username = serializers.SerializerMethodField()
     address        = serializers.CharField(source='location', read_only=True)
@@ -93,7 +101,66 @@ class PublicChargePointSerializer(serializers.ModelSerializer):
             return round(val, 6)
         except Exception:
             return 0.0
+"""
 
+
+
+class PublicChargePointSerializer(serializers.ModelSerializer):
+    # extra, computed fields
+    plug_type_label   = serializers.SerializerMethodField()
+    access_type_label = serializers.SerializerMethodField()
+    owner_username    = serializers.SerializerMethodField()
+
+    # ✨ Effective prices for the current user (fallback to default)
+    effective_price_per_kwh  = serializers.SerializerMethodField()
+    effective_price_per_hour = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ChargePoint
+        fields = (
+            "id", "pk", "name", "location", "lat", "lng",
+            "status", "updated", "connector_id",
+            "price_per_kwh", "price_per_hour",
+            # NEW model fields
+            "plug_type", "max_power_kw", "access_type",
+            # NEW display / helper fields
+            "plug_type_label", "access_type_label", "owner_username", 
+            "effective_price_per_kwh", "effective_price_per_hour",
+        )
+
+    def get_plug_type_label(self, obj):
+        # If your model has choices, DRF auto-generates get_FOO_display()
+        if hasattr(obj, "get_plug_type_display"):
+            return obj.get_plug_type_display()
+        return obj.plug_type
+
+    def get_access_type_label(self, obj):
+        if hasattr(obj, "get_access_type_display"):
+            return obj.get_access_type_display()
+        return obj.access_type
+
+    def get_owner_username(self, obj):
+        try:
+            return obj.tenant.owner.username
+        except Exception:
+            return None
+
+    def _user_override(self, obj):
+        request = self.context.get("request")
+        if not request or not request.user or not request.user.is_authenticated:
+            return None
+        try:
+            return obj.user_prices.select_related("user").get(user=request.user)
+        except ChargePointUserPrice.DoesNotExist:
+            return None
+
+    def get_effective_price_per_kwh(self, obj):
+        up = self._user_override(obj)
+        return up.price_per_kwh if (up and up.price_per_kwh is not None) else obj.price_per_kwh
+
+    def get_effective_price_per_hour(self, obj):
+        up = self._user_override(obj)
+        return up.price_per_hour if (up and up.price_per_hour is not None) else obj.price_per_hour
 
 
 
@@ -158,7 +225,7 @@ class ChargePointSerializer(serializers.ModelSerializer):
            "pk", "id" , "name", "connector_id", "status", "updated",
             "price_per_kwh", "price_per_hour",
             "location", "lat", "lng",
-            "owner_username",
+            "owner_username", "plug_type", "max_power_kw", "access_type",
         ]
 
     def get_id(self, obj):             # ← stringify whatever the pk is

@@ -7,6 +7,25 @@ from django.utils.crypto import get_random_string
 from django.utils import timezone
 from decimal import Decimal, ROUND_HALF_UP
 
+
+class ChargePointUserPrice(models.Model):
+    cp   = models.ForeignKey("csms.ChargePoint", on_delete=models.CASCADE, related_name="user_prices")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="cp_prices")
+
+    price_per_kwh  = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)
+    price_per_hour = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+
+    created = models.DateTimeField(auto_now_add=True)
+    updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("cp", "user")
+
+    def __str__(self):
+        return f"CP#{self.cp_id} → {self.user.email} [{self.price_per_kwh} €/kWh, {self.price_per_hour} €/h]"
+
+
+
 # ──────────────────────────────────────────
 #  AUTH – two user roles
 # ──────────────────────────────────────────
@@ -61,6 +80,21 @@ class Tenant(models.Model):
 # ──────────────────────────────────────────
 class ChargePoint(models.Model):
 
+    PLUG_TYPES = [
+        ("type2", "Type 2"),
+        ("eu", "EU Schuko"),
+        ("uk", "UK 3-pin"),
+        ("swiss", "Swiss T13/T23"),
+        ("ccs2", "CCS Combo 2"),
+        ("chademo", "CHAdeMO"),
+    ]
+    ACCESS_TYPES = [
+        ("public", "Public"),
+        ("limited", "Limited"),
+        ("private", "Private"),
+    ]
+
+
     id            = models.CharField(primary_key=True, max_length=40)
     tenant = models.ForeignKey(
         Tenant,
@@ -83,6 +117,9 @@ class ChargePoint(models.Model):
     location       = models.CharField(max_length=255, blank=True, default="", null=True)
     lat = models.DecimalField(max_digits=9, decimal_places=6, blank=True, null=True)
     lng = models.DecimalField(max_digits=9, decimal_places=6, blank=True, null=True)
+    plug_type    = models.CharField(max_length=20, choices=PLUG_TYPES, null=True, blank=True)
+    max_power_kw = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    access_type  = models.CharField(max_length=12, choices=ACCESS_TYPES, null=True, blank=True)
 
     def has_coords(self):
         return self.lat is not None and self.lng is not None

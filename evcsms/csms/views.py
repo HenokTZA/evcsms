@@ -71,6 +71,16 @@ from .serializers import PublicChargePointSerializer
 import stripe
 from .ocpp_bridge import enqueue
 
+from datetime import datetime, timezone as dt_tz
+from decimal import Decimal
+from django.utils import timezone
+from django.db.models.functions import Coalesce
+from django.db.models import Q
+
+from .pagination import StandardResultsSetPagination
+from rest_framework.pagination import LimitOffsetPagination
+
+
 User = get_user_model()
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
@@ -123,6 +133,123 @@ def get_cp_for_user(cp_key, user):
     """
     qs = _tenant_qs(ChargePoint, user)
     return get_object_or_404(qs, pk=cp_key)
+
+
+
+class RevenueMoM(APIView):
+    """
+    GET /api/sessions/revenue/mom/?cp=<optional CP id or CP code>
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        cp_filter = request.query_params.get("cp")
+
+        now = timezone.now()
+        this_start = self._month_start(now)
+        next_start = self._next_month_start(this_start)
+        last_start = self._prev_month_start(this_start)
+
+        qs = Transaction.objects.all()
+
+        # Optional: filter to a single charge point by numeric id or by code (ChargePoint.cp_id)
+        if cp_filter:
+            if str(cp_filter).isdigit():
+                qs = qs.filter(cp_id=int(cp_filter))
+            else:
+                qs = qs.filter(cp__cp_id=cp_filter)
+
+        # Use stop_time when available, otherwise start_time
+        qs = qs.annotate(event_time=Coalesce("stop_time", "start_time"))
+
+        this_qs = qs.filter(event_time__gte=this_start, event_time__lt=next_start)
+        last_qs = qs.filter(event_time__gte=last_start, event_time__lt=this_start)
+
+        this_total = self._sum_revenue(this_qs)
+        last_total = self._sum_revenue(last_qs)
+
+        delta_abs = (this_total - last_total).quantize(Decimal("0.01"))
+        delta_pct = None if last_total == 0 else float((delta_abs / last_total) * Decimal(100))
+        direction = "up" if delta_abs > 0 else "down" if delta_abs < 0 else "flat"
+
+        data = {
+            "this_month": {
+                "start": this_start.isoformat(),
+                "end":   (next_start - timezone.timedelta(microseconds=1)).isoformat(),
+                "total": str(this_total),
+            },
+            "last_month": {
+                "start": last_start.isoformat(),
+                "end":   (this_start - timezone.timedelta(microseconds=1)).isoformat(),
+                "total": str(last_total),
+            },
+            "delta": {
+                "absolute": str(delta_abs),
+                "percent":  delta_pct,  # None if last month was 0
+                "direction": direction,
+            },
+        }
+        return Response(data, status=200)
+
+    # ----- helpers -----
+
+    def _month_start(self, dt):
+        dt = timezone.localtime(dt) if timezone.is_aware(dt) else dt
+        return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0, tzinfo=dt.tzinfo)
+
+    def _next_month_start(self, dt):
+        if dt.month == 12:
+            return dt.replace(year=dt.year + 1, month=1)
+        return dt.replace(month=dt.month + 1)
+
+    def _prev_month_start(self, dt):
+        if dt.month == 1:
+            return dt.replace(year=dt.year - 1, month=12)
+        return dt.replace(month=dt.month - 1)
+
+    def _sum_revenue(self, qs):
+        """
+        Calculate revenue per Transaction:
+
+          energy_cost = ((latest_wh - start_wh) / 1000) * price_kwh_at_start
+          time_cost   = hours_between(start_time, stop_time) * price_hour_at_start
+
+        Falls back to 0 where pieces are missing. Adjust if you store a final
+        amount on the transaction (then prefer that).
+        """
+        D = lambda x: Decimal(str(x)) if x is not None else Decimal("0")
+        total = Decimal("0")
+
+        for t in qs.select_related("cp"):
+            # Energy component
+            kwh = None
+            if getattr(t, "latest_wh", None) is not None and getattr(t, "start_wh", None) is not None:
+                try:
+                    kwh_val = (t.latest_wh - t.start_wh) / 1000.0
+                    if kwh_val > 0:
+                        kwh = kwh_val
+                except Exception:
+                    kwh = None
+            ppk = getattr(t, "price_kwh_at_start", None)
+            energy_cost = (D(kwh) * D(ppk)) if kwh is not None and ppk is not None else Decimal("0")
+
+            # Time component (only if we have a stop_time)
+            time_cost = Decimal("0")
+            if getattr(t, "start_time", None) and getattr(t, "stop_time", None):
+                try:
+                    dur_hours = (t.stop_time - t.start_time).total_seconds() / 3600.0
+                    if dur_hours > 0 and getattr(t, "price_hour_at_start", None) is not None:
+                        time_cost = D(dur_hours) * D(t.price_hour_at_start)
+                except Exception:
+                    pass
+
+            total += (energy_cost + time_cost)
+
+        return total.quantize(Decimal("0.01"))
+
+
+
+
 
 
 class SessionsRevenueStats(APIView):
@@ -659,20 +786,13 @@ class ChargePointByCode(generics.RetrieveAPIView):
         code = self.kwargs["cp_id"]
         return generics.get_object_or_404(self.get_queryset(), cp_id__iexact=code)
 
+
+class ThirtyLimitOffset(LimitOffsetPagination):
+    default_limit = 30
+    max_limit = 200
+
+
 """
-class TransactionList(generics.ListAPIView):
-    serializer_class   = TransactionSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-
-    def get_queryset(self):
-        # return the current user's tenant → all their transactions
-        return (
-            _tenant_qs(Transaction, self.request.user)
-            .order_by("-start_time")  # newest first
-        )
-"""
-
 class TransactionList(generics.ListAPIView):
     serializer_class   = TransactionSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -703,37 +823,46 @@ class TransactionList(generics.ListAPIView):
             return qs[offset: offset + 50]
 
         return qs
-
-
-
 """
-class RecentSessions(generics.ListAPIView):
 
-    serializer_class   = TransactionSerializer
+
+class TransactionList(generics.ListAPIView):
+    serializer_class = TransactionSerializer
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = ThirtyLimitOffset
 
     def get_queryset(self):
-        return (
+        qs = (
             _tenant_qs(Transaction, self.request.user)
-            .order_by("-pk")[:10]
+            .order_by("-start_time", "-pk")
         )
-"""
 
-# ────────────────────────────────────────────────────────────────
-#  Auth / profile
-# ────────────────────────────────────────────────────────────────
-"""
-class SignupView(generics.CreateAPIView):
-    permission_classes = [permissions.AllowAny]
-    serializer_class = PublicSignupSerializer
+        qp = self.request.query_params
+        if "limit" in qp:  # manual slice mode for dashboard
+            try:
+                limit = min(int(qp.get("limit", "0")), 200)
+            except Exception:
+                limit = 0
+            try:
+                offset = max(int(qp.get("offset", "0")), 0)
+            except Exception:
+                offset = 0
 
-    def perform_create(self, serializer):
-        role = serializer.validated_data.get("role", "user")
-        if not settings.ALLOW_PUBLIC_SUPER_ADMIN_SIGNUP and role == "super_admin":
-            # Force downgrade if the flag is off
-            serializer.validated_data["role"] = "user"
-        serializer.save()
-"""
+            if limit > 0:
+                return qs[offset: offset + limit]
+            if offset > 0:
+                return qs[offset: offset + 50]
+
+        return qs
+
+    def paginate_queryset(self, queryset):
+        # If using manual slicing (limit present), skip DRF pagination so response is a plain array
+        if "limit" in self.request.query_params:
+            return None
+        return super().paginate_queryset(queryset)
+
+
+
 
 class SignupView(APIView):
     permission_classes = [AllowAny]

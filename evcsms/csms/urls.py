@@ -7,7 +7,7 @@ from django.urls import path
 from . import views
 from .views      import SignupView, LoginView, ChargePointList, TransactionList, ChargePointDetail, PasswordResetRequestView, PasswordResetConfirmView, AdminCPStatusStats
 from .views import GenerateReportView, LogoutView, PublicChargePointList, PublicChargePointDetail, PublicCreateCheckoutSession, PublicStartAfterCheckout, PublicStopCharging
-from .views import CPUserPriceListCreate, CPUserPriceDetail
+from .views import CPUserPriceListCreate, CPUserPriceDetail, RevenueMoM
 #from .views_reports import GenerateReportView
 
 urlpatterns = [
@@ -38,6 +38,7 @@ urlpatterns = [
     #path("charge-points/<slug:cp_key>/user-prices/<int:upid>/", views.UserPriceDetail.as_view()),
     path("charge-points/<slug:pk>/user-prices/",                CPUserPriceListCreate.as_view(), name="cp-userprice-list"),
     path("charge-points/<slug:pk>/user-prices/<int:upid>/",     CPUserPriceDetail.as_view(),     name="cp-userprice-detail"),
+    path("sessions/revenue/mom/", RevenueMoM.as_view(), name="revenue-mom"),
 
 ]
 

@@ -149,8 +149,18 @@ DEFAULT_FROM_EMAIL = "H-Craft <test@habm-lab.com>"
 
 DJANGO_SECRET_KEY = "replace-this-with-a-strong-random-string"
 
+# add this:
+try:
+    from dotenv import load_dotenv  # pip install python-dotenv
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    load_dotenv(BASE_DIR / ".env")
+except Exception:
+    pass
+
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_PUBLIC_KEY = os.getenv("STRIPE_PUBLIC_KEY", "")
+
+
 
 # Your frontend’s base URL for the Stripe success/cancel redirects
 FRONTEND_BASE = "http://147.93.127.215:5173"

@@ -233,15 +233,8 @@ class MyChargePoint(CP):
         )
         print(f"[StartTx] #{tx_id} on {self.id} meterStart={meter_start}Wh")
 
-        # NEW: if id_tag encodes a user-id, store txId in cache for (user, cp)
-        try:
-            if id_tag.startswith("user-"):
-                user_id = int(id_tag.split("-", 1)[1])
-                # defer import to avoid circulars
-                from csms.tx_cache import set_active_tx
-                set_active_tx(user_id=user_id, cp_id=str(self.id), tx_id=tx_id)
-        except Exception as e:
-            print(f"[StartTx] could not cache active tx: {e}")
+        # remember it so RemoteStop can be auto-filled
+        self.last_transaction_id = tx_id
 
         return _cr(
             "StartTransaction",
@@ -261,9 +254,8 @@ class MyChargePoint(CP):
         transaction_data: list | None = None,
         **_
     ):
-        # IMPORTANT: look up by tx_id (the OCPP transactionId), not by pk
         tx = await sync_to_async(
-            Transaction.objects.filter(tx_id=transaction_id).first
+            Transaction.objects.filter(pk=transaction_id).first
         )()
         if tx:
             tx.stop_time = timestamp
@@ -274,6 +266,8 @@ class MyChargePoint(CP):
             print(f"[StopTx] #{transaction_id} → {tx.kwh:.3f} kWh")
 
         return _cr("StopTransaction", id_tag_info={"status": "Accepted"})
+        # clear cache (defensive – we’re returning already, so put above if needed)
+        # self.last_transaction_id = None
 
 
 
@@ -315,6 +309,9 @@ class MyChargePoint(CP):
     # ------------------------------------------------------------------ #
     def __init__(self, charge_point_id, websocket):
         super().__init__(charge_point_id, websocket)
+
+        # cache the last/active tx id for this CP session (memory-only)
+        self.last_transaction_id: int | None = None
 
         # simple, mutable stores for demo purposes
         self.config: dict[str, str] = {        # “key” → “value”

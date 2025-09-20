@@ -80,6 +80,9 @@ from django.db.models import Q
 from .pagination import StandardResultsSetPagination
 from rest_framework.pagination import LimitOffsetPagination
 
+# add this near other imports
+from csms.tx_cache import get_active_tx, set_active_tx, clear_active_tx
+
 
 User = get_user_model()
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -495,8 +498,9 @@ class PublicStartAfterCheckout(APIView):
         if ses.get("payment_status") != "paid":
             return Response({"detail": "Payment not completed"}, status=400)
 
-        # Start charging using connector_id and an idTag for this user
-        id_tag = request.user.username or request.user.email or "user"
+        # Start charging using connector_id and a parsable idTag bound to this user
+        id_tag = f"user-{request.user.id}"
+        connector_id = getattr(cp, "connector_id", None) or 1
         enqueue(cp.id, "RemoteStartTransaction", {
             "connectorId": cp.connector_id,
             "idTag": id_tag
@@ -513,13 +517,26 @@ class PublicStopCharging(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        cp = get_object_or_404(ChargePoint, pk=pk, tenant__owner__role='root')
-        tx = Transaction.objects.filter(cp=cp, stop_time__isnull=True).order_by("-start_time").first()
-        if not tx:
-            return Response({"detail": "No active session"}, status=404)
+        # allow stopping on public CPs owned by super_admin
+        cp = get_object_or_404(ChargePoint, pk=pk, tenant__owner__role='super_admin')
 
-        enqueue(cp.id, "RemoteStopTransaction", {"transactionId": tx.tx_id})
-        return Response({"detail": "stopping"}, status=200)
+        # 1) Preferred: fetch tx_id we cached when StartTransaction arrived
+        tx_id = get_active_tx(request.user.id, str(cp.id))
+
+        # 2) Fallback: latest open tx on this CP (if cache missed)
+        if tx_id is None:
+            tx = (Transaction.objects
+                  .filter(cp=cp, stop_time__isnull=True)
+                  .order_by("-start_time", "-pk")
+                  .first())
+            if not tx:
+                return Response({"detail": "No active session"}, status=404)
+            tx_id = tx.tx_id
+
+        enqueue(cp.id, "RemoteStopTransaction", {"transactionId": tx_id})
+        # Optional: clear cache slot now (or wait for StopTransaction hook)
+        clear_active_tx(request.user.id, str(cp.id))
+        return Response({"detail": "stopping", "tx_id": tx_id}, status=200)
 
 
 
@@ -860,6 +877,10 @@ class TransactionList(generics.ListAPIView):
         if "limit" in self.request.query_params:
             return None
         return super().paginate_queryset(queryset)
+
+
+
+
 
 
 

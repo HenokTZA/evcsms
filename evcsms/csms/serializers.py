@@ -266,13 +266,19 @@ class TransactionSerializer(serializers.ModelSerializer):
         value = obj.kwh() if callable(obj.kwh) else obj.kwh        # ← CALL IT
         return float(value or 0)
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if getattr(instance, "tx_id", None):
+            data["id"] = instance.tx_id  # expose OCPP transactionId as `id` for the UI
+        return data
+
     def get_total(self, obj):
         value = obj.total_price() if callable(obj.total_price) else obj.total_price
         return float(value) if value is not None else None
 
     class Meta:
         model  = Transaction
-        fields = ["id","cp","user","kWh","Started","Ended","price_kwh","price_hour","total"]
+        fields = ["id","cp","user","kWh","Started","Ended","price_kwh","price_hour","total","tx_id"]
 
 
 """

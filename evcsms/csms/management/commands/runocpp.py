@@ -19,6 +19,10 @@ import re
 from csms.ocpp_hub import hub
 import django.utils.timezone as dj_timezone
 
+from django.db.models import Q
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
+
 # --------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO)
@@ -31,6 +35,57 @@ _camel = re.compile(r"(?<!^)([A-Z])")
 def camel_to_snake(s: str) -> str:
     """transactionId → transaction_id,  connectorId → connector_id…"""
     return _camel.sub(r"_\1", s).lower()
+
+
+
+# --- helper: resolve a Django user id from the idTag -------------------------
+@sync_to_async
+def _resolve_user_id_from_idtag(id_tag: str):
+    """
+    Try to map an OCPP idTag to a Django user id via several common schemes:
+    - "user-<pk>"     (your special case)
+    - RFIDCard(uid)   -> owner
+    - UserTag(value)  -> user
+    - username/email  -> user
+    Returns user_id or None.
+    """
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
+
+    # 1) Special form "user-<pk>"
+    if isinstance(id_tag, str) and id_tag.startswith("user-"):
+        try:
+            pk = int(id_tag.split("-", 1)[1])
+            return User.objects.only("id").get(pk=pk).id
+        except Exception:
+            pass
+
+    # 2) RFID card mapping (adjust model/field names to your schema)
+    try:
+        from csms.models import RFIDCard  # if you have it
+        card = RFIDCard.objects.select_related("owner").get(uid__iexact=id_tag)
+        if card.owner_id:
+            return card.owner_id
+    except Exception:
+        pass
+
+    # 3) Tag table mapping (adjust model/field names to your schema)
+    try:
+        from csms.models import UserTag  # if you have it
+        tag = UserTag.objects.select_related("user").get(value__iexact=id_tag)
+        if tag.user_id:
+            return tag.user_id
+    except Exception:
+        pass
+
+    # 4) Fallback: username / email equals id_tag
+    user = (
+        User.objects.filter(Q(username__iexact=id_tag) | Q(email__iexact=id_tag))
+        .only("id")
+        .first()
+    )
+    return user.id if user else None
+# -----------------------------------------------------------------------------
 
 
 # ------------------------------------------------------------------------
@@ -203,7 +258,7 @@ class MyChargePoint(CP):
         return _cr("Authorize", id_tag_info={"status": "Accepted"})
 
 
-
+    """
     @on("StartTransaction")
     async def on_start_transaction(
         self,
@@ -239,6 +294,58 @@ class MyChargePoint(CP):
                 user_id = int(id_tag.split("-", 1)[1])
                 # defer import to avoid circulars
                 from csms.tx_cache import set_active_tx
+                set_active_tx(user_id=user_id, cp_id=str(self.id), tx_id=tx_id)
+        except Exception as e:
+            print(f"[StartTx] could not cache active tx: {e}")
+
+        return _cr(
+            "StartTransaction",
+            transaction_id=tx_id,
+            id_tag_info={"status": "Accepted"},
+        )
+    """
+
+    @on("StartTransaction")
+    async def on_start_transaction(self, id_tag: str, meter_start: int, timestamp: str, **_):
+        # Generate your tx id
+        @sync_to_async
+        def _next_tx_id():
+            last = Transaction.objects.order_by("-tx_id").only("tx_id").first()
+            return (last.tx_id if last else 0) + 1
+
+        tx_id = await _next_tx_id()
+
+        # Resolve CP and price snapshot
+        cp_obj = await sync_to_async(ChargePoint.objects.get)(pk=self.id)
+
+        # Parse timestamp safely (fall back to now)
+        ts = parse_datetime(timestamp) or timezone.now()
+
+        # NEW: resolve the Django user id tied to this id_tag (if any)
+        user_id = await _resolve_user_id_from_idtag(id_tag)
+
+        # Create transaction (include user_id if found)
+        @sync_to_async
+        def _create_tx():
+            return Transaction.objects.create(
+                tx_id=tx_id,
+                cp_id=self.id,
+                user_tag=id_tag,
+                user_id=user_id,                # <-- FK set here (requires Transaction.user FK field)
+                start_wh=meter_start,
+                latest_wh=meter_start,
+                start_time=ts,
+                price_kwh_at_start=cp_obj.price_per_kwh,
+                price_hour_at_start=cp_obj.price_per_hour,
+            )
+
+        tx = await _create_tx()
+        print(f"[StartTx] #{tx_id} on {self.id} meterStart={meter_start}Wh user_id={user_id}")
+
+        # Cache active transaction for this user (if any)
+        try:
+            if user_id:
+                from csms.tx_cache import set_active_tx  # defer import to avoid circulars
                 set_active_tx(user_id=user_id, cp_id=str(self.id), tx_id=tx_id)
         except Exception as e:
             print(f"[StartTx] could not cache active tx: {e}")

@@ -2,60 +2,82 @@
 """
 Tiny utilities that are reused by several views / serializers.
 """
+
 from django.db.models import Q
+from typing import Set
+
+
 
 """
-def _tenant_qs(model, user, *, with_owner_split=False):
+def _tenant_qs(model, user):
 
-    # avoid circular import
-    from .models import Tenant, Transaction
+    qs = model.objects.all()
 
-    try:
-        tenant = user.tenant                       # reverse OneToOne from User
-    except Tenant.DoesNotExist:
-        return model.objects.none()
+    # Charge points, commands, per-CP prices → all hang off a CP
+    if model.__name__ in ("ChargePoint", "CPCommand", "ChargePointUserPrice"):
+        return qs.filter(tenant__owner=user)
 
-    if model is Transaction:
-        qs = model.objects.filter(cp__tenant=tenant)
-    else:
-        qs = model.objects.filter(tenant=tenant)
+    # Transactions → traverse via CP. A super admin only sees sessions performed on his/her CPs.
+    if model.__name__ == "Transaction":
+        owner_cp_q = Q(cp__tenant__owner=user)
 
-    if with_owner_split and getattr(user, "is_cp_admin", False):
-        qs = qs.filter(owner=user)
+        # Optional: allow end users to see their own sessions by tag (keep if you have such a flow).
+        # If you *don’t* want this, just:  return qs.filter(owner_cp_q)
+        try:
+            user_sessions_q = Q(user_tag__user=user)
+        except Exception:
+            user_sessions_q = Q()
 
-    return qs
+        return qs.filter(owner_cp_q | user_sessions_q).distinct()
+
+    # Default (defensive) — also scope through CP → tenant → owner
+    if hasattr(model, "_meta") and any(f.name == "cp" for f in model._meta.fields):
+        return qs.filter(cp__tenant__owner=user)
+
+    # If nothing applies, safest is to return nothing
+    return qs.none()
 """
 
 def _tenant_qs(model, user):
     """
-    Scope model querysets by tenancy/ownership.
+    Return a queryset limited to the current owner's tenant scope.
 
-    - super_admin: everything
-    - owner with org: anything whose ChargePoint owner is in the same org
-    - owner without org: anything whose ChargePoint owner == user
-    - normal/end users: only their own sessions (if you allow them to list)
+    - ChargePoint-like models: tenant__owner = user
+    - Transaction: cp__tenant__owner = user
+    - Any model with a 'cp' FK: scope via cp__tenant__owner
+    - Otherwise: return none (defensive)
     """
     qs = model.objects.all()
 
-    role = getattr(user, "role", None)
-    if role == "super_admin" or getattr(user, "is_superuser", False):
-        return qs
+    name = model.__name__
 
-    # If you have an organization/tenant model on users & owners, prefer org scoping.
-    if hasattr(user, "org_id") and user.org_id:
-        # Owner/admins in the same org see all CPs owned by that org
-        return qs.filter(cp__owner__org_id=user.org_id)
+    # Anything directly owned by a tenant via ChargePoint.tenant
+    if name in ("ChargePoint", "CPCommand", "ChargePointUserPrice"):
+        return qs.filter(tenant__owner=user)
 
-    # Fallback: user owns the CPs directly
-    if model.__name__ == "Transaction":
-        # Owners see everything that happened on their charge points
-        owner_q = Q(cp__owner=user)
+    # Transactions must be limited to CPs owned by the current super admin
+    if name == "Transaction":
+        return qs.filter(cp__tenant__owner=user).distinct()
 
-        # Optional: allow end users to see *their own* sessions (keep if you need user history page)
-        user_sessions_q = Q(user_tag__user=user) if hasattr(model, "user_tag") else Q()
+    # Defensive default: if model has a 'cp' FK, scope via cp → tenant → owner
+    if hasattr(model, "_meta") and any(f.name == "cp" for f in model._meta.fields):
+        return qs.filter(cp__tenant__owner=user)
 
-        # If you only want owners to hit this endpoint, drop `user_sessions_q`
-        return qs.filter(owner_q | user_sessions_q).distinct()
+    # If nothing matches, safest is to return empty
+    return qs.none()
 
-    # Default fallback for other models (CPs, etc.)
-    return qs.filter(cp__owner=user)
+
+
+def get_user_identifiers(user):
+    vals = set()
+
+    # common: stable “idTag” we create for this user when starting public sessions
+    vals.add(f"user-{user.id}")
+
+    # add other fields if you have them
+    for attr in ("rfid_tag", "rfid", "card_uid", "id_tag", "email", "username"):
+        v = getattr(user, attr, None)
+        if v:
+            vals.add(str(v))
+
+    return [v for v in vals if v]

@@ -135,7 +135,7 @@ class Transaction(models.Model):
     tx_id      = models.PositiveIntegerField(primary_key=True)
     cp         = models.ForeignKey(ChargePoint, on_delete=models.CASCADE,
                                    related_name="transaction")
-    user_tag   = models.CharField(max_length=50, blank=True)
+    #user_tag   = models.CharField(max_length=50, blank=True)
     start_wh   = models.FloatField(null=True, blank=True)
     latest_wh  = models.FloatField(null=True, blank=True)
     start_time = models.DateTimeField()
@@ -144,6 +144,13 @@ class Transaction(models.Model):
                                               null=True, blank=True)
     price_hour_at_start    = models.DecimalField(max_digits=8, decimal_places=3,
                                               null=True, blank=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="transactions",
+    )
+    user_tag = models.CharField(max_length=128, blank=True, null=True, db_index=True)
 
     @property
     def kwh(self):

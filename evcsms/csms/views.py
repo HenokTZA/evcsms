@@ -8,7 +8,7 @@ from rest_framework import status
 
 #from .ocpp_bridge import send_cp_command
 from .models import ChargePoint
-
+from rest_framework.generics import ListAPIView
 
 from django.contrib.auth import get_user_model
 from rest_framework import generics, permissions, status
@@ -82,7 +82,7 @@ from rest_framework.pagination import LimitOffsetPagination
 
 # add this near other imports
 from csms.tx_cache import get_active_tx, set_active_tx, clear_active_tx
-
+from .helpers import get_user_identifiers
 
 User = get_user_model()
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -153,7 +153,7 @@ class RevenueMoM(APIView):
         next_start = self._next_month_start(this_start)
         last_start = self._prev_month_start(this_start)
 
-        qs = Transaction.objects.all()
+        qs = _tenant_qs(Transaction, request.user)
 
         # Optional: filter to a single charge point by numeric id or by code (ChargePoint.cp_id)
         if cp_filter:
@@ -259,7 +259,8 @@ class SessionsRevenueStats(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        qs = _tenant_qs(Transaction, request.user).select_related("cp")
+        #qs = _tenant_qs(Transaction, request.user).select_related("cp")
+        qs = _tenant_qs(Transaction, self.request.user).select_related("cp")
 
         tznow = now()
         start_of_month = tznow.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -809,40 +810,8 @@ class ThirtyLimitOffset(LimitOffsetPagination):
     max_limit = 200
 
 
+
 """
-class TransactionList(generics.ListAPIView):
-    serializer_class   = TransactionSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        # all sessions for the current tenant/org
-        qs = (
-            _tenant_qs(Transaction, self.request.user)
-            .order_by("-start_time", "-pk")  # newest first; pk tiebreaker
-        )
-
-        # lightweight limit/offset
-        qp = self.request.query_params
-        try:
-            limit = int(qp.get("limit", "0"))
-        except (TypeError, ValueError):
-            limit = 0
-        try:
-            offset = int(qp.get("offset", "0"))
-        except (TypeError, ValueError):
-            offset = 0
-
-        if limit > 0:
-            limit = min(limit, 200)  # safety cap
-            return qs[offset: offset + limit]
-        if offset > 0:
-            # if someone passes offset without limit, give a default window
-            return qs[offset: offset + 50]
-
-        return qs
-"""
-
-
 class TransactionList(generics.ListAPIView):
     serializer_class = TransactionSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -877,9 +846,97 @@ class TransactionList(generics.ListAPIView):
         if "limit" in self.request.query_params:
             return None
         return super().paginate_queryset(queryset)
+"""
 
 
+class TransactionList(generics.ListAPIView):
+    serializer_class = TransactionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = ThirtyLimitOffset  # keeps your limit/offset fallback
 
+    def get_queryset(self):
+        user = self.request.user
+        qp   = self.request.query_params
+
+        # ── Case A: normal user asks for their own history
+        # Frontend will call /api/sessions/?mine=1 for normal users’ TimelinePage
+        mine = qp.get("mine")
+        if mine and not _is_super_admin(user):
+            # Get known identifiers for this user (email, tag, rfid, etc.)
+            # helpers.get_user_identifiers(user) should return a list like ["user-42", "RFID1234", ...]
+            ids = get_user_identifiers(user) or []
+            if not ids:
+                return Transaction.objects.none()
+
+            # Build an OR over any "tag-like" fields that exist in Transaction
+            field_names = {f.name for f in Transaction._meta.fields}
+            candidate_fields = ("user_tag", "id_tag", "tag", "card_uid", "rfid")
+
+            tag_fields = [f for f in candidate_fields if f in field_names]
+            if not tag_fields:
+                return Transaction.objects.none()
+
+            q = Q()
+            for ident in ids:
+                for f in tag_fields:
+                    q |= Q(**{f + "__iexact": ident})
+
+            qs = Transaction.objects.filter(q)
+
+        else:
+            # ── Case B: super admin (or normal user without mine=1)
+            # Super admin sees only sessions on CPs they own; normal user sees whatever your tenant policy allows
+            qs = _tenant_qs(Transaction, user)
+
+        # Optional filters (date, cp) applied on top of scoped queryset
+        start = qp.get("start")
+        end   = qp.get("end")
+        if start:
+            # adapt to your actual start field name if it's "Started"
+            if "start_time" in {f.name for f in Transaction._meta.fields}:
+                qs = qs.filter(start_time__gte=start)
+            else:
+                qs = qs.filter(Started__gte=start)
+        if end:
+            if "start_time" in {f.name for f in Transaction._meta.fields}:
+                qs = qs.filter(start_time__lt=end)
+            else:
+                qs = qs.filter(Started__lt=end)
+
+        cp_param = qp.get("cp")
+        if cp_param:
+            if str(cp_param).isdigit():
+                qs = qs.filter(cp_id=int(cp_param))
+            else:
+                # adapt if your code field is named differently (e.g., cp_id vs code)
+                qs = qs.filter(Q(cp__cp_id__iexact=cp_param) | Q(cp__name__iexact=cp_param))
+
+        # Ordering (newest first). Fall back if your model uses Started/Ended
+        order_field = "start_time" if "start_time" in {f.name for f in Transaction._meta.fields} else "Started"
+        qs = qs.select_related("cp").order_by(f"-{order_field}", "-pk")
+
+        # ── Manual slice mode for dashboards (preserve your existing behavior)
+        if "limit" in qp:
+            try:
+                limit  = min(int(qp.get("limit", "0")), 200)
+            except Exception:
+                limit = 0
+            try:
+                offset = max(int(qp.get("offset", "0")), 0)
+            except Exception:
+                offset = 0
+            if limit > 0:
+                return qs[offset: offset + limit]
+            if offset > 0:
+                return qs[offset: offset + 50]
+
+        return qs
+
+    def paginate_queryset(self, queryset):
+        # If using manual slicing (?limit) return plain array (no DRF pagination)
+        if "limit" in self.request.query_params:
+            return None
+        return super().paginate_queryset(queryset)
 
 
 
@@ -919,20 +976,6 @@ class MeView(generics.RetrieveAPIView):
         return ctx
 
 
-"""
-# csms/views.py  (append at the end)
-
-class ChargePointDetail(generics.RetrieveAPIView):
-    #permission_classes = [permissions.IsAuthenticated]
-    permission_classes = [permissions.IsAuthenticated & (IsRootAdmin | IsCpAdmin)]
-    #permission_classes = [IsRootAdmin | IsCpAdmin]
-    serializer_class   = ChargePointSerializer
-    queryset           = ChargePoint.objects.all()
-
-    def get_queryset(self):
-        # reuse earlier helper to respect tenancy
-        return _tenant_qs(ChargePoint, self.request.user)
-"""
 
 class ChargePointDetail(generics.RetrieveUpdateAPIView):
     """

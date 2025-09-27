@@ -39,6 +39,7 @@ urlpatterns = [
     path("charge-points/<slug:pk>/user-prices/",                CPUserPriceListCreate.as_view(), name="cp-userprice-list"),
     path("charge-points/<slug:pk>/user-prices/<int:upid>/",     CPUserPriceDetail.as_view(),     name="cp-userprice-detail"),
     path("sessions/revenue/mom/", RevenueMoM.as_view(), name="revenue-mom"),
+    #path("sessions/mine/", MySessionsView.as_view(), name="my-sessions"),
 
 ]
 
